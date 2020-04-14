@@ -1,3 +1,7 @@
+/* Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+ * See top-level LICENSE file for details.
+ */
+
 /**
  * @file cali_types.c
  * Context annotation library type conversion functions
@@ -20,6 +24,7 @@ static const struct typemap_t {
   { "double", CALI_TYPE_DOUBLE },
   { "bool",   CALI_TYPE_BOOL   },
   { "type",   CALI_TYPE_TYPE   },
+  { "ptr",    CALI_TYPE_PTR    },
   { NULL,     CALI_TYPE_INV    }
 };
 
@@ -61,7 +66,7 @@ cali_prop2string(int prop, char* buf, size_t len)
   int ret = 0;
   
   for (const struct propmap_t* p = propmap; p->str; ++p) {
-    if (!((prop & p->mask) == p->prop))
+      if (!((prop & p->mask) == (int) p->prop))
       continue;
     
     size_t slen = strlen(p->str);

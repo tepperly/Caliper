@@ -1,19 +1,13 @@
-if (${CMAKE_CXX_COMPILER_ID} MATCHES Intel)
-  # CMake does not have proper compiler feature support for Intel compilers :-/
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
-else()
-  set(CMAKE_C_STANDARD_REQUIRED ON)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON) 
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD_REQUIRED ON) 
 
-  set(CMAKE_CXX_STANDARD 11)
-  set(CMAKE_C_STANDARD   99)
-endif()
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_C_STANDARD   99)
 
 set(CALIPER_TEST_APPS
   cali-annotation-perftest
-  cali-test
-  cali-throughput-pthread)
+  cali-flush-perftest
+  cali-test)
 
 find_package(OpenMP)
 
@@ -22,17 +16,27 @@ foreach(app ${CALIPER_TEST_APPS})
   target_link_libraries(${app} caliper)
 endforeach()
 
+if (CALIPER_HAVE_ADIAK)
+  target_include_directories(cali-annotation-perftest PRIVATE ${adiak_INCLUDE_DIRS})
+  target_link_libraries(cali-annotation-perftest adiak)
+endif()
+
+set(CALIPER_TEST_OMP_APPS
+  cali-annotation-perftest
+  cali-flush-perftest)
+
 if (${OpenMP_FOUND})
-  target_compile_options(cali-annotation-perftest
-    PRIVATE ${OpenMP_CXX_FLAGS})
-  target_link_libraries(cali-annotation-perftest
-    ${OpenMP_CXX_FLAGS})
+  foreach (app ${CALIPER_TEST_OMP_APPS})
+    target_compile_options(${app}
+      PRIVATE ${OpenMP_CXX_FLAGS})
+    target_link_libraries(${app}
+      ${OpenMP_CXX_FLAGS})
+  endforeach()
 endif()
 
 target_link_libraries(cali-annotation-perftest
   caliper-tools-util)
-target_link_libraries(cali-throughput-pthread
-  caliper-tools-util
-  Threads::Threads)
+target_link_libraries(cali-flush-perftest
+  caliper-tools-util)
 
 add_subdirectory(ci_app_tests)

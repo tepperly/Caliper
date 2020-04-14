@@ -1,34 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 /// \file CaliperMetadataDB.h
 /// \brief CaliperMetadataDB class declaration
@@ -40,7 +11,6 @@
 
 #include "../common/Attribute.h"
 #include "../common/CaliperMetadataAccessInterface.h"
-#include "../common/RecordMap.h"
 
 #include <map>
 #include <memory>
@@ -72,14 +42,16 @@ public:
     // --- I/O API 
     // 
 
-    RecordMap   merge(const RecordMap& rec, IdMap& map);
-    void        merge(const RecordMap& rec, IdMap& map, NodeProcessFn node_fn, SnapshotProcessFn snap_fn);
-
-    // Merge node and snapshots. Note: this interface may change.
     const Node* merge_node    (cali_id_t       node_id, 
                                cali_id_t       attr_id, 
                                cali_id_t       prnt_id, 
                                const Variant&  v_data, 
+                               IdMap&          idmap);
+    
+    const Node* merge_node    (cali_id_t       node_id, 
+                               cali_id_t       attr_id, 
+                               cali_id_t       prnt_id, 
+                               const std::string& data, 
                                IdMap&          idmap);
 
     EntryList   merge_snapshot(size_t          n_nodes, 
@@ -89,13 +61,22 @@ public:
                                const Variant   values[],
                                const IdMap&    idmap) const;
 
-    /// \brief Merge snapshot record bound to metadata DB \a db into this metadata DB
-    EntryList   merge_snapshot(size_t          n_nodes,
-                               const Node* const* nodes, 
-                               size_t          n_imm,   
-                               const cali_id_t attr_ids[], 
-                               const Variant   values[],
-                               const CaliperMetadataAccessInterface& db);
+    /// \brief Merge snapshot record bound to metadata DB \a db
+    ///   into this metadata DB    
+    EntryList   merge_snapshot(const CaliperMetadataAccessInterface& db,
+                               const std::vector<Entry>& rec);
+
+    Entry       merge_entry   (cali_id_t       node_id,
+                               const IdMap&    idmap);
+    Entry       merge_entry   (cali_id_t       attr_id,
+                               const std::string& data,
+                               const IdMap&    idmap);
+    
+    void        merge_global  (cali_id_t       node_id,
+                               const IdMap&    idmap);
+    void        merge_global  (cali_id_t       attr_id,
+                               const std::string& data,
+                               const IdMap&    idmap);
     
     //
     // --- Query API
@@ -106,7 +87,7 @@ public:
     Attribute   get_attribute(cali_id_t id) const;
     Attribute   get_attribute(const std::string& name) const;
 
-    std::vector<Attribute> get_attributes() const;
+    std::vector<Attribute> get_all_attributes() const;
     
     //
     // --- Manipulation
@@ -133,6 +114,14 @@ public:
     /// \brief Import global entries from metadata DB \a db into this
     ///   metadata DB
     std::vector<Entry> import_globals(CaliperMetadataAccessInterface& db);
+
+    /// \brief Import globals in record \a rec from metadata DB \a db into this
+    ///   metadata DB
+    std::vector<Entry> import_globals(CaliperMetadataAccessInterface& db, const std::vector<Entry>& globals);
+
+    /// \brief print usage statistics
+    std::ostream&
+    print_statistics(std::ostream& os);
 };
 
 }

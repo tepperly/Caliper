@@ -3,11 +3,11 @@
 #
 
 cmake_minimum_required(VERSION 3.1)
-project (caliper)
+project (caliper C CXX)
 
 # Version information
 set(CALIPER_MAJOR_VERSION 2)
-set(CALIPER_MINOR_VERSION 0)
+set(CALIPER_MINOR_VERSION 4)
 set(CALIPER_PATCH_VERSION 0)
 set(CALIPER_VERSION "${CALIPER_MAJOR_VERSION}.${CALIPER_MINOR_VERSION}.${CALIPER_PATCH_VERSION}-dev")
 
@@ -15,6 +15,10 @@ set(CALIPER_VERSION "${CALIPER_MAJOR_VERSION}.${CALIPER_MINOR_VERSION}.${CALIPER
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake;${CMAKE_MODULE_PATH}")
 
 include(GNUInstallDirs)
+
+if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+  set(CALIPER_HAVE_LINUX TRUE)
+endif()
 
 # Optional Fortran
 option(WITH_FORTRAN "Install Fortran interface and build test programs")
@@ -29,21 +33,26 @@ option(WITH_TOOLS     "Build Caliper tools" TRUE)
 
 option(WITH_NVPROF    "Enable NVidia profiler bindings (requires CUDA)" FALSE)
 option(WITH_CUPTI     "Enable CUPTI service (CUDA performance analysis)" FALSE)
-option(WITH_NETOUT    "Enable netout service (requires curl)" FALSE)
 option(WITH_PAPI      "Enable PAPI hardware counter service (requires papi)" FALSE)
 option(WITH_LIBPFM    "Enable libpfm (perf_event) sampling" FALSE)
 option(WITH_LIBDW     "Enable libdw support (for module detection in callpath service)" FALSE)
 option(WITH_CALLPATH  "Enable callpath service (requires libunwind)" FALSE)
 option(WITH_MPI       "Enable MPI" FALSE)
-option(WITH_MPIT      "Enable MPI-T" FALSE)
-option(WITH_OMPT      "Enable OMPT" FALSE)
+# option(WITH_MPIT      "Enable MPI-T" FALSE)
+# option(WITH_OMPT      "Enable OMPT" FALSE)
 option(WITH_SAMPLER   "Enable Linux sampler (x86 and PPC Linux only)" FALSE)
 option(WITH_DYNINST   "Enable dyninst (for symbollookup service" FALSE)
-option(WITH_GOTCHA    "Enable GOTCHA wrapping" TRUE)
+option(WITH_GOTCHA    "Enable GOTCHA wrapping" ${CALIPER_HAVE_LINUX})
 option(WITH_SOS       "Enable SOSFlow data management" FALSE)
+option(WITH_TAU       "Enable TAU service (TAU Performance System)" FALSE)
 option(WITH_VTUNE     "Enable Intel(R) VTune(tm) annotation bindings" FALSE)
+option(WITH_ADIAK     "Enable adiak support" FALSE)
+option(WITH_KOKKOS    "Enable Kokkos profiling support" FALSE)
+option(WITH_SYMBOLLOOKUP "Enable symbollookup service using either Dyninst or libdl" FALSE)
 
 option(USE_EXTERNAL_GOTCHA "Use pre-installed gotcha instead of building our own" FALSE)
+
+option(ENABLE_HISTOGRAMS "Enable histogram aggregation (experimental)" FALSE)
 
 # configure testing explicitly rather than with include(CTest) - avoids some clutter
 option(BUILD_TESTING  "Build continuous integration app and unit tests" FALSE)
@@ -59,14 +68,26 @@ if (BUILD_SHARED_LIBS)
   # the RPATH to be used when installing, but only if it's not a system directory
   list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES ${CMAKE_INSTALL_FULL_LIBDIR} isSystemDir)
   if("${isSystemDir}" STREQUAL "-1")
-    set(CMAKE_INSTALL_RPATH ${CMAKE_INSTALL_FULL_LIBDIR})
+    list(APPEND CMAKE_INSTALL_RPATH ${CMAKE_INSTALL_FULL_LIBDIR})
   endif("${isSystemDir}" STREQUAL "-1")
 else()
   # Try to find static libs first for static builds
-  list(INSERT CMAKE_FIND_LIBRARY_SUFFIXES 0 .a)
+  # list(INSERT CMAKE_FIND_LIBRARY_SUFFIXES 0 .a)
   # Disable rpaths
   set(CMAKE_SKIP_RPATH TRUE)
 endif(BUILD_SHARED_LIBS)
+
+if (${CALIPER_HAVE_LINUX})
+  set(CALIPER_HAVE_CPUINFO TRUE)
+  set(CALIPER_HAVE_MEMUSAGE TRUE)
+  set(CALIPER_cpuinfo_CMAKE_MSG "Yes")
+  set(CALIPER_memusage_CMAKE_MSG "Yes")
+endif()
+
+if (ENABLE_HISTOGRAMS)
+  set(CALIPER_ENABLE_HISTOGRAMS TRUE)
+  set(CALIPER_histogram_CMAKE_MSG "Yes")
+endif()
 
 if(WITH_VTUNE)
   include(FindITTAPI)
@@ -101,19 +122,6 @@ if(WITH_CUPTI)
     set(CALIPER_HAVE_CUPTI TRUE)
     set(CALIPER_CUpti_CMAKE_MSG "Yes, using ${CUPTI_LIBRARY}")
     list(APPEND CALIPER_EXTERNAL_LIBS ${CUPTI_LIBRARY})
-  endif()
-endif()
-
-if(CALIPER_HAVE_TAU)
-    find_library(tau_lib libTAU.so)
-    list(APPEND CALIPER_EXTERNAL_LIBS ${tau_lib})
-endif()
-
-if (WITH_NETOUT)
-  include(FindLibcurl)
-  if (LIBCURL_FOUND)
-    set(CALIPER_HAVE_LIBCURL TRUE)
-    list(APPEND CALIPER_EXTERNAL_LIBS ${LIBCURL_LIBRARY})
   endif()
 endif()
 
@@ -165,8 +173,8 @@ if (WITH_CALLPATH)
   include(FindLibunwind)
   if (LIBUNWIND_FOUND)
     set(CALIPER_HAVE_LIBUNWIND TRUE)
-    set(CALIPER_Libunwind_CMAKE_MSG "Yes, using ${LIBUNWIND_LIBRARY}")
-    list(APPEND CALIPER_EXTERNAL_LIBS ${LIBUNWIND_LIBRARY})
+    set(CALIPER_Libunwind_CMAKE_MSG "Yes, using ${LIBUNWIND_LIBRARIES}")
+    list(APPEND CALIPER_EXTERNAL_LIBS ${LIBUNWIND_LIBRARIES})
   else()
     message(WARNING "Callpath support was requested but libunwind was not found!")
   endif()
@@ -186,23 +194,42 @@ if (WITH_CALLPATH)
   endif()
 endif()
 
+# Find Gotcha
 if (WITH_GOTCHA)
-  if (USE_EXTERNAL_GOTCHA)
-    find_package(gotcha 1.0)
-    if (gotcha_FOUND)
-      get_target_property(_gotcha_location gotcha LOCATION)
-      set(CALIPER_GOTCHA_CMAKE_MSG "Yes, using ${_gotcha_location}")
-      set(CALIPER_HAVE_GOTCHA TRUE)
-      list(APPEND CALIPER_EXTERNAL_LIBS ${gotcha_LIBRARIES})
+  if (CALIPER_HAVE_LINUX)
+    if (USE_EXTERNAL_GOTCHA)
+      find_package(gotcha 1.0)
+      if (gotcha_FOUND)
+        get_target_property(_gotcha_location gotcha LOCATION)
+        set(CALIPER_GOTCHA_CMAKE_MSG "Yes, using ${_gotcha_location}")
+        set(CALIPER_HAVE_GOTCHA TRUE)
+        list(APPEND CALIPER_EXTERNAL_LIBS ${gotcha_LIBRARIES})
+      else()
+        message(WARNING "External gotcha was requested but gotcha was not found!")
+      endif()
     else()
-      message(WARNING "External gotcha was requested but gotcha was not found!")
+      set(CALIPER_GOTCHA_CMAKE_MSG "Yes, using internal")
+      set(gotcha_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/ext/gotcha/include)
+      set(CALIPER_HAVE_GOTCHA TRUE)
+      list(APPEND CALIPER_EXTERNAL_SOURCES $<TARGET_OBJECTS:caliper-gotcha>)
     endif()
   else()
-    set(CALIPER_GOTCHA_CMAKE_MSG "Yes, using internal")
-    set(gotcha_INCLUDE_DIRS ${CMAKE_CURRENT_BINARY_DIR}/ext/gotcha/gotcha-download/gotcha-src/include)
-    set(gotcha_LIBRARIES gotcha)
-    set(CALIPER_HAVE_GOTCHA TRUE)
-    list(APPEND CALIPER_EXTERNAL_LIBS ${gotcha_LIBRARIES})
+    message(WARNING "Gotcha support requested but Gotcha requires Linux, this is ${CMAKE_SYSTEM_NAME}")
+  endif()
+endif()
+
+if (WITH_ADIAK)
+  find_package(adiak)
+  if (adiak_FOUND)
+    get_target_property(_adiak_location adiak LOCATION)
+    set(CALIPER_adiak_CMAKE_MSG "Yes, using ${_adiak_location}")
+    set(CALIPER_HAVE_ADIAK TRUE)
+    list(APPEND CALIPER_EXTERNAL_LIBS ${adiak_LIBRARIES})
+    if (CALIPER_HAVE_LINUX)
+      list(APPEND CALIPER_EXTERNAL_LIBS "-ldl")
+    endif()
+  else()
+    message(WARNING "Adiak support was requested but Adiak was not found")
   endif()
 endif()
 
@@ -214,6 +241,11 @@ if (WITH_SOS)
     set(CALIPER_HAVE_SOS TRUE)
     set(CALIPER_SOSFlow_CMAKE_MSG "Yes, using ${SOSFlow_LIBRARY}")
   endif()
+endif()
+
+if (WITH_KOKKOS_PROFILING)
+  set(CALIPER_HAVE_KOKKOS TRUE)
+  set(CALIPER_Kokkos_CMAKE_MSG "Yes")
 endif()
 
 # pthread handling
@@ -244,8 +276,9 @@ if (WITH_MPI)
     set(CALIPER_MPI_CMAKE_MSG "Yes, using ${MPI_C_LIBRARIES}")
 
     if (WITH_MPIT)
-      set(CALIPER_HAVE_MPIT TRUE)
-      set(CALIPER_MPIT_CMAKE_MSG "Yes")
+      message(STATUS "MPIT is currently not supported, disabling.")
+      # set(CALIPER_HAVE_MPIT TRUE)
+      # set(CALIPER_MPIT_CMAKE_MSG "Yes")
     endif()
 
     if (CALIPER_HAVE_GOTCHA)
@@ -257,6 +290,23 @@ if (WITH_MPI)
   endif()
 endif()
 
+
+if(WITH_TAU)
+  if (CALIPER_HAVE_MPI)
+    find_package(TAU QUIET)
+    if (TAU_FOUND)
+      set(CALIPER_HAVE_TAU TRUE)
+      set(CALIPER_TAU_CMAKE_MSG "Yes, using ${TAU_LIBRARIES}")
+      list(APPEND CALIPER_MPI_EXTERNAL_LIBS ${TAU_LIBRARIES})
+    else()
+      message(WARNING "TAU bindings requested but TAU API was not found!\n"
+        "Set TAU_PREFIX to installation path and re-run cmake.")
+    endif()
+  else()
+    message(WARNING "TAU support requires MPI-enabled build!\n")
+  endif()
+endif()
+
 # Find Python
 
 find_package(PythonInterp REQUIRED)
@@ -264,13 +314,39 @@ find_package(PythonInterp REQUIRED)
 if (WITH_SAMPLER)
   # Sampler is currently Linux-specific: check for Linux
   if (${CMAKE_SYSTEM_NAME} MATCHES Linux)
-    set(CALIPER_HAVE_SAMPLER TRUE)
-    set(CALIPER_Sampler_CMAKE_MSG "Yes")
     # Linux PC sampler needs -lrt
-    list(APPEND CALIPER_EXTERNAL_LIBS "-lrt")
+    find_library(RT_LIBRARY
+      rt)
+    if (NOT ${RT_LIBRARY} MATCHES RT_LIBRARY-NOTFOUND)
+      set(CALIPER_HAVE_SAMPLER TRUE)
+      set(CALIPER_Sampler_CMAKE_MSG "Yes")
+      list(APPEND CALIPER_EXTERNAL_LIBS ${RT_LIBRARY})
+    endif()
   else()
     message(WARNING "Sampler is not supported on ${CMAKE_SYSTEM_NAME}")
   endif()
+endif()
+
+if (WITH_SYMBOLLOOKUP)
+  if (CALIPER_HAVE_DYNINST)
+    set(CALIPER_HAVE_SYMBOLLOOKUP TRUE)
+    set(CALIPER_SymbolLookup_CMAKE_MSG "Yes, using Dyninst")
+  else()
+    find_library(DL_LIBRARY
+      dl)
+    if (NOT ${DL_LIBRARY} MATCHES DL_LIBRARY-NOTFOUND)
+      set(CALIPER_HAVE_SYMBOLLOOKUP TRUE)
+      set(CALIPER_SymbolLookup_CMAKE_MSG "Yes, using ${DL_LIBRARY}")
+      list(APPEND CALIPER_EXTERNAL_LIBS ${DL_LIBRARY})
+    endif()
+  endif()
+endif()
+
+# PGI 17.x has issues with some constexpr constructors
+if(CMAKE_CXX_COMPILER_ID MATCHES PGI)
+  set(CALIPER_REDUCED_CONSTEXPR_USAGE TRUE)
+else()
+  set(CALIPER_REDUCED_CONSTEXPR_USAGE FALSE)
 endif()
 
 # Create a config header file
@@ -290,9 +366,9 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 install(FILES ${PROJECT_BINARY_DIR}/include/caliper/caliper-config.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/caliper)
 
-# Create pkg-confic .pc file
-set(PKG_CONFIG_INCLUDEDIR "\${prefix}/include")
-set(PKG_CONFIG_LIBDIR "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
+# Create pkg-config .pc file
+set(PKG_CONFIG_INCLUDEDIR "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
+set(PKG_CONFIG_LIBDIR "${CMAKE_INSTALL_FULL_LIBDIR}")
 set(PKG_CONFIG_LIBS "-L\${libdir} -lcaliper")
 set(PKG_CONFIG_CFLAGS "-I\${includedir}")
 
@@ -317,10 +393,6 @@ install(FILES ${PROJECT_BINARY_DIR}/caliper.pc
 add_subdirectory(ext)
 add_subdirectory(src)
 
-if (CALIPER_HAVE_MPI)
-  add_subdirectory(mpi)
-endif()
-
 add_subdirectory(examples/apps EXCLUDE_FROM_ALL)
 
 if (BUILD_TESTING)
@@ -343,8 +415,12 @@ message(STATUS "System                    : ${CMAKE_SYSTEM} (${CMAKE_SYSTEM_PROC
 message(STATUS "Install dir               : ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Build shared libs         : ${BUILD_SHARED_LIBS}")
 message(STATUS "Build Caliper tools       : ${WITH_TOOLS}")
+message(STATUS "Build tests               : ${BUILD_TESTING}")
 
 set(CALIPER_MODULES
+  cpuinfo
+  memusage
+  adiak
   GOTCHA
   PAPI
   Libpfm
@@ -352,13 +428,17 @@ set(CALIPER_MODULES
   Dyninst
   Sampler
   SOSFlow
+  SymbolLookup
   MPI
   MPIWRAP
   MPIT
   OMPT
   NVProf
   CUpti
-  VTune)
+  Kokkos
+  TAU
+  VTune
+  histogram)
 
 foreach(_caliper_module ${CALIPER_MODULES})
   string(LENGTH "${_caliper_module}" _strlen)

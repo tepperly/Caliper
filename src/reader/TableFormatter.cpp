@@ -1,34 +1,5 @@
-// Copyright (c) 2016, Lawrence Livermore National Security, LLC.
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // Print human-readable table
 
@@ -38,11 +9,12 @@
 
 #include "caliper/common/Attribute.h"
 #include "caliper/common/CaliperMetadataAccessInterface.h"
-#include "caliper/common/ContextRecord.h"
 #include "caliper/common/Node.h"
 #include "caliper/common/StringConverter.h"
 
 #include "caliper/common/util/split.hpp"
+
+#include "../common/util/format_util.h"
 
 #include <algorithm>
 #include <iterator>
@@ -54,6 +26,7 @@ struct TableFormatter::TableImpl
 {
     struct Column {
         std::string name;
+        std::string display_name;
         std::size_t max_width;
 
         Attribute   attr;
@@ -62,9 +35,9 @@ struct TableFormatter::TableImpl
 
         QuerySpec::SortSpec::Order sort_order;
 
-        Column(const std::string& n, std::size_t w, const Attribute& a, bool p,
+        Column(const std::string& n, const std::string alias, std::size_t w, const Attribute& a, bool p,
                QuerySpec::SortSpec::Order o = QuerySpec::SortSpec::Order::None)
-            : name(n), max_width(w), attr(a), print(p), sort_order(o)
+            : name(n), display_name(alias), max_width(w), attr(a), print(p), sort_order(o)
             { }
     };
 
@@ -73,6 +46,8 @@ struct TableFormatter::TableImpl
 
     std::mutex                              m_col_lock;
     std::mutex                              m_row_lock;
+
+    std::map<std::string, std::string>      m_aliases;
 
     bool                                    m_auto_column;
 
@@ -85,7 +60,7 @@ struct TableFormatter::TableImpl
 
         for (const std::string& s : fields)
             if (s.size() > 0)
-                m_cols.emplace_back(s, s.size(), Attribute::invalid, false);
+                m_cols.emplace_back(s, s, s.size(), Attribute::invalid, false);
 
         fields.clear();
 
@@ -101,7 +76,7 @@ struct TableFormatter::TableImpl
 
         for (const std::string& s : fields)
             if (s.size() > 0)
-                m_cols.emplace_back(s, s.size(), Attribute::invalid, true);
+                m_cols.emplace_back(s, s, s.size(), Attribute::invalid, true);
     }
 
     void configure(const QuerySpec& spec) {
@@ -109,6 +84,8 @@ struct TableFormatter::TableImpl
         m_rows.clear();
         
         m_auto_column = false;
+
+        m_aliases = spec.aliases;
 
         // Fill sort columns
 
@@ -119,7 +96,7 @@ struct TableFormatter::TableImpl
             break;
         case QuerySpec::SortSelection::List:
             for (const QuerySpec::SortSpec& s : spec.sort.list)
-                m_cols.emplace_back(s.attribute, s.attribute.size(), Attribute::invalid, false, s.order);
+                m_cols.emplace_back(s.attribute, s.attribute, s.attribute.size(), Attribute::invalid, false, s.order);
             break;
         }
 
@@ -131,8 +108,15 @@ struct TableFormatter::TableImpl
             m_auto_column = true;
             break;
         case QuerySpec::AttributeSelection::List:
-            for (const std::string& s : spec.attribute_selection.list)
-                m_cols.emplace_back(s, s.size(), Attribute::invalid, true);
+            for (const std::string& s : spec.attribute_selection.list) {
+                std::string alias = s;
+                
+                auto it = m_aliases.find(s);
+                if (it != m_aliases.end())
+                    alias = it->second;
+                    
+                m_cols.emplace_back(s, alias, alias.size(), Attribute::invalid, true);
+            }
             break;
         case QuerySpec::AttributeSelection::None:
             // Keep auto_column = false and empty column list
@@ -149,19 +133,21 @@ struct TableFormatter::TableImpl
         if (it != m_cols.end())
             return;
 
-        Attribute attr   = db.get_attribute(attr_id);
+        Attribute attr = db.get_attribute(attr_id);
 
-        if (attr == Attribute::invalid)
+        if (attr == Attribute::invalid || attr.is_hidden() || attr.is_global())
             return;
 
-        std::string name = attr.name();
-
-        // Skip internal "cali." and ".event" attributes
-        if (name.compare(0, 5, "cali." ) == 0 ||
-            name.compare(0, 6, "event.") == 0)
-            return;
-
-        m_cols.emplace_back(name, name.size(), attr, true);
+        std::string name  = attr.name();
+        std::string alias = name;
+        
+        {
+            auto ait = m_aliases.find(name);
+            if (ait != m_aliases.end())
+                alias = ait->second;
+        }
+        
+        m_cols.emplace_back(name, alias, alias.size(), attr, true);
     }
 
     std::vector<Column> update_columns(CaliperMetadataAccessInterface& db, const EntryList& list) {
@@ -272,19 +258,13 @@ struct TableFormatter::TableImpl
                                          return lhs.size() > rhs.size();
                                      cali_attr_type type = this->m_cols[c].attr.type();
                                      return Variant::from_string(type, lhs[c].c_str()) > Variant::from_string(type, rhs[c].c_str());
-                                 });
-                
-
-        const char whitespace[120+1] =
-            "                                        "
-            "                                        "
-            "                                        ";
+                                 });                
 
         // print header
 
         for (const Column& col : m_cols)
             if (col.print)
-                os << col.name << whitespace+(120 - std::min<std::size_t>(120, 1+col.max_width-col.name.size()));
+                util::pad_right(os, col.display_name, col.max_width);
 
         os << std::endl;
 
@@ -297,13 +277,14 @@ struct TableFormatter::TableImpl
 
                 std::string    str = row[c];
                 cali_attr_type t   = m_cols[c].attr.type();
-                bool           align_right = (t == CALI_TYPE_INT || t == CALI_TYPE_UINT || t == CALI_TYPE_DOUBLE);
-                std::size_t    len = m_cols[c].max_width-str.size();
+                bool           align_right = (t == CALI_TYPE_INT  ||
+                                              t == CALI_TYPE_UINT ||
+                                              t == CALI_TYPE_DOUBLE);
 
                 if (align_right)
-                    os << whitespace+(120 - std::min<std::size_t>(120, len)) << str << ' ';
+                    util::pad_left (os, str, m_cols[c].max_width);
                 else
-                    os << str << whitespace+(120 - std::min<std::size_t>(120, 1+len));
+                    util::pad_right(os, str, m_cols[c].max_width);
             }
 
             os << std::endl;

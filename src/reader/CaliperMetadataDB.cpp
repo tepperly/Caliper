@@ -1,45 +1,12 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // CaliperMetadataDB class definition
 
 #include "caliper/reader/CaliperMetadataDB.h"
 
-#include "caliper/common/csv/CsvReader.h"
-
 #include "caliper/common/Log.h"
 #include "caliper/common/Node.h"
-#include "caliper/common/RecordMap.h"
-#include "caliper/common/StringConverter.h"
 
 #include <algorithm>
 #include <cassert>
@@ -54,52 +21,14 @@ using namespace std;
 
 namespace
 {
-    inline cali_id_t
-    id_from_rec(const RecordMap& rec, const char* key) {
-        auto it = rec.find(std::string(key));
 
-        if (it != rec.end() && !it->second.empty()) {
-            bool ok = false;
-            cali_id_t id = StringConverter(it->second.front()).to_uint(&ok);
+inline cali_id_t
+map_id(cali_id_t id, const IdMap& idmap) {
+    auto it = idmap.find(id);
+    return it == idmap.end() ? id : it->second;
+}
 
-            if (ok)
-                return id;
-        }
-
-        return CALI_INV_ID;
-    }
-
-    inline cali_id_t
-    map_id(cali_id_t id, const IdMap& idmap) {
-        auto it = idmap.find(id);
-        return it == idmap.end() ? id : it->second;
-    }
-    
-    inline cali_id_t
-    map_id_from_rec(const RecordMap& rec, const char* key, const IdMap& idmap) {
-        cali_id_t id = id_from_rec(rec, key);
-
-        if (id != CALI_INV_ID) {
-            auto it = idmap.find(id);
-            return it == idmap.end() ? id : it->second;
-        }
-
-        return CALI_INV_ID;
-    }
-
-    inline cali_id_t
-    map_id_from_string(const std::string& str, const IdMap& idmap) {
-        bool ok = false;
-        cali_id_t id = StringConverter(str).to_uint(&ok);
-
-        if (ok) {
-            auto it = idmap.find(id);
-            return it == idmap.end() ? id : it->second;
-        }
-
-        return CALI_INV_ID;
-    }
-} // namespace 
+} // namespace
 
 struct CaliperMetadataDB::CaliperMetadataDBImpl
 {
@@ -108,7 +37,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
     mutable mutex             m_node_lock;
 
     Node*                     m_type_nodes[CALI_MAXTYPE+1] = { 0 };
-    
+
     map<string, Node*>        m_attributes;
     mutable mutex             m_attribute_lock;
 
@@ -117,7 +46,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
 
     vector<Entry>             m_globals;
     mutex                     m_globals_lock;
-    
+
     inline Node* node(cali_id_t id) const {
         std::lock_guard<std::mutex>
             g(m_node_lock);
@@ -125,9 +54,19 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         return id < m_nodes.size() ? m_nodes[id] : nullptr;
     }
 
+    inline Attribute attribute(cali_id_t id) const {
+        std::lock_guard<std::mutex>
+            g(m_node_lock);
+
+        if (id >= m_nodes.size())
+            return Attribute::invalid;
+
+        return Attribute::make_attribute(m_nodes[id]);
+    }
+
     void setup_bootstrap_nodes() {
         // Create initial nodes
-        
+
         static const struct NodeInfo {
             cali_id_t id;
             cali_id_t attr_id;
@@ -145,23 +84,24 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
             {  8, 8,  { CALI_TYPE_STRING, "cali.attribute.name",  19 }, 3 },
             {  9, 8,  { CALI_TYPE_STRING, "cali.attribute.type",  19 }, 7 },
             { 10, 8,  { CALI_TYPE_STRING, "cali.attribute.prop",  19 }, 1 },
-            { CALI_INV_ID, CALI_INV_ID, { }, CALI_INV_ID },
+            { 11, 9,  { CALI_TYPE_PTR    }, CALI_INV_ID },
+            { CALI_INV_ID, CALI_INV_ID, { }, CALI_INV_ID }
         };
 
         // Create nodes
 
-        m_nodes.resize(11);
-        
+        m_nodes.resize(12);
+
         for (const NodeInfo* info = bootstrap_nodes; info->id != CALI_INV_ID; ++info) {
             Node* node = new Node(info->id, info->attr_id, info->data);
 
             m_nodes[info->id] = node;
-                    
+
             if (info->parent != CALI_INV_ID)
                 m_nodes[info->parent]->append(node);
             else
                 m_root.append(node);
-            
+
             if (info->attr_id == 9 /* type node */)
                 m_type_nodes[info->data.to_attr_type()] = node;
             else if (info->attr_id == 8 /* attribute node*/)
@@ -171,9 +111,9 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
 
     Node* create_node(cali_id_t attr_id, const Variant& data, Node* parent) {
         // NOTE: We assume that m_node_lock is locked!
-        
+
         Node* node = new Node(m_nodes.size(), attr_id, data);
-        
+
         m_nodes.push_back(node);
 
         if (parent)
@@ -182,26 +122,31 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         return node;
     }
 
-    /// \brief Make string variant from string database 
+    /// \brief Make string variant from string database
     Variant make_string_variant(const char* str, size_t len) {
+        if (len > 0 && str[len-1] == '\0')
+            --len;
+
         std::lock_guard<std::mutex>
             g(m_string_db_lock);
-                
-        auto it = std::upper_bound(m_string_db.begin(), m_string_db.end(), str,
-                                   [len](const char* a, const char* b) { return strncmp(a, b, len) < 0; });
 
-        if (it != m_string_db.end() && str == *it)
+        auto it = std::lower_bound(m_string_db.begin(), m_string_db.end(), str,
+                                   [len](const char* a, const char* b) {
+                                       return strncmp(a, b, len) < 0;
+                                   });
+
+        if (it != m_string_db.end() && strncmp(str, *it, len) == 0 && strlen(*it) == len)
             return Variant(CALI_TYPE_STRING, *it, len);
 
         char* ptr = new char[len + 1];
         strncpy(ptr, str, len);
         ptr[len] = '\0';
-        
+
         m_string_db.insert(it, ptr);
 
-        return Variant(CALI_TYPE_STRING, ptr, len);        
+        return Variant(CALI_TYPE_STRING, ptr, len);
     }
-    
+
     Variant make_variant(cali_attr_type type, const std::string& str) {
         Variant ret;
 
@@ -213,7 +158,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
             Log(0).stream() << "CaliperMetadataDB: Can't read USR data at this point" << std::endl;
             break;
         case CALI_TYPE_STRING:
-            ret = make_string_variant(str.c_str(), str.size());
+            ret = make_string_variant(str.data(), str.size());
             break;
         default:
             ret = Variant::from_string(type, str.c_str());
@@ -231,24 +176,24 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         if (node_id == CALI_INV_ID || attr_id == CALI_INV_ID || v_data.empty()) {
             Log(0).stream() << "CaliperMetadataDB::merge_node(): Invalid node info: "
                             << "id="       << node_id
-                            << ", attr="   << attr_id 
-                            << ", parent=" << prnt_id 
+                            << ", attr="   << attr_id
+                            << ", parent=" << prnt_id
                             << ", value="  << v_data
                             << std::endl;
             return nullptr;
         }
-        
+
         Node* parent = &m_root;
 
         if (prnt_id != CALI_INV_ID) {
             std::lock_guard<std::mutex>
-                g(m_node_lock);            
+                g(m_node_lock);
 
             if (prnt_id >= m_nodes.size()) {
                 Log(0).stream() << "CaliperMetadataDB::merge_node(): Invalid parent node " << prnt_id << " for "
                                 <<  "id="       << node_id
-                                << ", attr="   << attr_id 
-                                << ", parent=" << prnt_id 
+                                << ", attr="   << attr_id
+                                << ", parent=" << prnt_id
                                 << ", value="  << v_data
                                 << std::endl;
                 return nullptr;
@@ -276,13 +221,13 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         if (new_node && node->attribute() == Attribute::meta_attribute_keys().name_attr_id) {
             std::lock_guard<std::mutex>
                 g(m_attribute_lock);
-            
+
             m_attributes.insert(make_pair(string(node->data().to_string()), node));
         }
 
         return node;
     }
-    
+
     /// Merge node given by un-mapped node info from stream with given \a idmap into DB
     /// If \a v_data is a string, it must already be in the string database!
     const Node* merge_node(cali_id_t node_id, cali_id_t attr_id, cali_id_t prnt_id, const Variant& v_data, IdMap& idmap) {
@@ -297,35 +242,6 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         return node;
     }
 
-    const Node* merge_node_record(const RecordMap& rec, IdMap& idmap) {
-        cali_id_t node_id = ::id_from_rec(rec, "id");
-        cali_id_t attr_id = ::id_from_rec(rec, "attr");
-        cali_id_t prnt_id = ::id_from_rec(rec, "parent");
-        Variant   v_data;
-
-        {
-            Attribute attr = attribute(::map_id(attr_id, idmap));
-
-            if (attr.is_hidden()) { // skip reading data from hidden entries
-                v_data = Variant(CALI_TYPE_USR, nullptr, 0);
-            } else {
-                auto it = rec.find("data");
-
-                if (it != rec.end() && !it->second.empty())
-                    v_data = make_variant(attr.type(), it->second.front());
-            }
-        }
-
-        const Node* node = merge_node(node_id, attr_id, prnt_id, v_data, idmap);
-        
-        if (!node) {
-            Log(0).stream() << "CaliperMetadataDB::merge_node_record(): Invalid node from record: " << rec << endl;
-            return nullptr;
-        }
-
-        return node;
-    }
-
     EntryList merge_snapshot(size_t n_nodes, const cali_id_t node_ids[],
                              size_t n_imm,   const cali_id_t attr_ids[], const Variant values[],
                              const IdMap& idmap) const
@@ -333,22 +249,22 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         EntryList list;
 
         for (size_t i = 0; i < n_nodes; ++i)
-            list.push_back(Entry(node(::map_id(node_ids[i], idmap)))); 
+            list.push_back(Entry(node(::map_id(node_ids[i], idmap))));
         for (size_t i = 0; i < n_imm; ++i)
             list.push_back(Entry(::map_id(attr_ids[i], idmap), values[i]));
 
-        return list;       
+        return list;
     }
 
     const Node* recursive_merge_node(const Node* node, const CaliperMetadataAccessInterface& db) {
         if (!node || node->id() == CALI_INV_ID)
             return nullptr;
-        if (node->id() < 11)
+        if (node->id() < 12)
             return m_nodes[node->id()];
 
-        const Node* attr_node = 
+        const Node* attr_node =
             recursive_merge_node(db.node(node->attribute()), db);
-        const Node* parent    = 
+        const Node* parent    =
             recursive_merge_node(node->parent(), db);
 
         Variant v_data = node->data();
@@ -359,129 +275,39 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         return merge_node(node->id(), attr_node->id(), parent ? parent->id() : CALI_INV_ID, v_data);
     }
 
-    EntryList merge_snapshot(size_t n_nodes, const Node* const* nodes,
-                             size_t n_imm,   const cali_id_t attr_ids[], const Variant values[],
-                             const CaliperMetadataAccessInterface& db)
+    EntryList merge_snapshot(const CaliperMetadataAccessInterface& db,
+                             const EntryList& rec)
     {
         EntryList list;
+        list.reserve(rec.size());
 
-        for (size_t i = 0; i < n_nodes; ++i)
-            list.push_back(Entry(recursive_merge_node(nodes[i], db))); 
-        for (size_t i = 0; i < n_imm; ++i) 
-            list.push_back(Entry(recursive_merge_node(db.node(attr_ids[i]), db)->id(), values[i]));
+        for (const Entry& e : rec)
+            if (e.is_reference())
+                list.push_back(Entry(recursive_merge_node(e.node(), db)));
+            else if (e.is_immediate())
+                list.push_back(Entry(recursive_merge_node(db.node(e.attribute()), db)->id(), e.value()));
 
-        return list;       
-    }
-
-    EntryList merge_ctx_record_to_list(const RecordMap& rec, IdMap& idmap) {
-        EntryList list;
-
-        auto r_it = rec.find("ref");
-
-        if (r_it != rec.end())
-            for (const std::string& str : r_it->second) {
-                cali_id_t id = ::map_id_from_string(str, idmap);
-
-                std::lock_guard<std::mutex>
-                    g(m_node_lock);
-                
-                if (id < m_nodes.size())
-                    list.push_back(Entry(m_nodes[id]));
-            }
-
-        auto a_it = rec.find("attr");
-        auto d_it = rec.find("data");
-
-        if (a_it != rec.end() && d_it != rec.end() && a_it->second.size() == d_it->second.size())
-            for (EntryList::size_type i = 0; i < a_it->second.size(); ++i) {
-                Attribute attr = attribute(::map_id_from_string(a_it->second[i], idmap));
-
-                if (attr != Attribute::invalid)
-                    list.push_back(Entry(attr, make_variant(attr.type(), d_it->second[i])));
-            }
-        
         return list;
     }
 
-    RecordMap merge_ctx_record(const RecordMap& rec, IdMap& idmap) {
-        RecordMap record(rec);
+    void merge_global(cali_id_t node_id, const IdMap& idmap) {
+        const Node* glbl_node = node(::map_id(node_id, idmap));
 
-        for (const string& key : { "ref", "attr" }) {
-            auto entry_it = record.find(key);
-
-            if (entry_it != record.end())
-                std::transform(entry_it->second.begin(), entry_it->second.end(),
-                               entry_it->second.begin(),
-                               [&idmap](const std::string& s) {
-                                   return std::to_string(::map_id_from_string(s, idmap));
-                               });
-        }
-
-        return record;
-    }
-
-    RecordMap merge(const RecordMap& rec, IdMap& idmap) {
-        auto rec_name_it = rec.find("__rec");
-
-        if (rec_name_it == rec.end() || rec_name_it->second.empty())
-            return rec;
-
-        if (       rec_name_it->second.front() == "node"   ) {
-            const Node* node = merge_node_record(rec, idmap);
-
-            if (node)
-                return node->record();
-        } else if (rec_name_it->second.front() == "ctx"    ) {
-            return merge_ctx_record(rec, idmap);
-        } else if (rec_name_it->second.front() == "globals") {
-            EntryList list = merge_ctx_record_to_list(rec, idmap);
-
+        if (glbl_node) {
             std::lock_guard<std::mutex>
                 g(m_globals_lock);
 
-            m_globals = std::move(list);
+            Entry e = Entry(glbl_node);
+
+            if (std::find(m_globals.begin(), m_globals.end(), e) == m_globals.end())
+                m_globals.push_back(e);
         }
-
-        return rec;
-    }
-
-    void merge(CaliperMetadataDB* db, const RecordMap& rec, IdMap& idmap, NodeProcessFn node_fn, SnapshotProcessFn snap_fn) {
-        auto rec_name_it = rec.find("__rec");
-
-        if (rec_name_it == rec.end() || rec_name_it->second.empty())
-            return;
-
-        if (       rec_name_it->second.front() == "node"   ) {
-            const Node* node = merge_node_record(rec, idmap);
-
-            if (node)
-                node_fn(*db, node);
-        } else if (rec_name_it->second.front() == "ctx"    ) {
-            snap_fn(*db, merge_ctx_record_to_list(rec, idmap));
-        } else if (rec_name_it->second.front() == "globals") {
-            EntryList list = merge_ctx_record_to_list(rec, idmap);
-
-            std::lock_guard<std::mutex>
-                g(m_globals_lock);
-
-            m_globals = std::move(list);
-        }
-    }
-
-    Attribute attribute(cali_id_t id) const {
-        std::lock_guard<std::mutex>
-            g(m_node_lock);
-        
-        if (id >= m_nodes.size())
-            return Attribute::invalid;
-
-        return Attribute::make_attribute(m_nodes[id]);
     }
 
     Attribute attribute(const std::string& name) const {
         std::lock_guard<std::mutex>
             g(m_attribute_lock);
-        
+
         auto it = m_attributes.find(name);
 
         return it == m_attributes.end() ? Attribute::invalid :
@@ -513,7 +339,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
 
             std::lock_guard<std::mutex>
                 g(m_node_lock);
-            
+
             for (node = parent->first_child(); node && !node->equals(attr[i].id(), data[i]); node = node->next_sibling())
                 ;
 
@@ -535,7 +361,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         for (size_t i = 0; i < n; ++i) {
             std::lock_guard<std::mutex>
                 g(m_node_lock);
-            
+
             for (node = parent->first_child(); node && !node->equals(nodelist[i]->attribute(), nodelist[i]->data()); node = node->next_sibling())
                 ;
 
@@ -552,16 +378,16 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
                                int meta, const Attribute* meta_attr, const Variant* meta_data) {
         std::lock_guard<std::mutex>
             g(m_attribute_lock);
-        
+
         // --- Check if attribute exists
-        
+
         auto it = m_attributes.lower_bound(name);
 
         if (it != m_attributes.end() && it->first == name)
             return Attribute::make_attribute(it->second);
 
         // --- Create attribute
-        
+
         Node* parent = m_type_nodes[type];
 
         if (meta > 0)
@@ -570,12 +396,12 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         Attribute n_attr[2] = { attribute(Attribute::meta_attribute_keys().prop_attr_id),
                                 attribute(Attribute::meta_attribute_keys().name_attr_id) };
         Variant   n_data[2] = { Variant(prop),
-                                make_variant(CALI_TYPE_STRING, name) }; 
+                                make_variant(CALI_TYPE_STRING, name) };
 
         Node* node = make_tree_entry(2, n_attr, n_data, parent);
 
         m_attributes.insert(make_pair(string(name), node));
-        
+
         return Attribute::make_attribute(node);
     }
 
@@ -592,7 +418,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
 
         std::lock_guard<std::mutex>
             g(m_globals_lock);
-        
+
         if (attr.store_as_value()) {
             auto it = std::find_if(m_globals.begin(), m_globals.end(),
                                    [attr](const Entry& e) {
@@ -626,14 +452,12 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
         }
     }
 
-    std::vector<Entry> import_globals(CaliperMetadataAccessInterface& db) {
-        std::vector<Entry> import_globals = db.get_globals();
-
+    std::vector<Entry> import_globals(CaliperMetadataAccessInterface& db, const std::vector<Entry>& import_globals) {
         std::lock_guard<std::mutex>
             g(m_globals_lock);
 
         m_globals.clear();
-        
+
         for (const Entry& e : import_globals)
             if (e.is_reference())
                 m_globals.push_back(Entry(recursive_merge_node(e.node(), db)));
@@ -642,7 +466,7 @@ struct CaliperMetadataDB::CaliperMetadataDBImpl
 
         return m_globals;
     }
-    
+
     CaliperMetadataDBImpl()
         : m_root { CALI_INV_ID, CALI_INV_ID, { } }
         {
@@ -667,18 +491,9 @@ CaliperMetadataDB::CaliperMetadataDB()
 { }
 
 CaliperMetadataDB::~CaliperMetadataDB()
-{ } 
-
-RecordMap
-CaliperMetadataDB::merge(const RecordMap& rec, IdMap& idmap)
-{
-    return mP->merge(rec, idmap);
-}
-
-void 
-CaliperMetadataDB::merge(const RecordMap& rec, IdMap& map, NodeProcessFn node_fn, SnapshotProcessFn snap_fn)
-{
-    mP->merge(this, rec, map, node_fn, snap_fn);
+{ 
+    if (Log::verbosity() >= 2)
+        print_statistics( Log(2).stream() );
 }
 
 const Node*
@@ -689,12 +504,26 @@ CaliperMetadataDB::merge_node(cali_id_t node_id, cali_id_t attr_id, cali_id_t pr
     // if value is a string, find or insert it in string DB
     if (v_data.type() == CALI_TYPE_STRING)
         v_data = mP->make_string_variant(static_cast<const char*>(value.data()), value.size());
-    
+
+    return mP->merge_node(node_id, attr_id, prnt_id, v_data, idmap);
+}
+
+const Node*
+CaliperMetadataDB::merge_node(cali_id_t node_id, cali_id_t attr_id, cali_id_t prnt_id, const std::string& data, IdMap& idmap)
+{
+    Attribute attr = mP->attribute(::map_id(attr_id, idmap));
+    Variant   v_data;
+
+    if (attr.is_hidden()) // skip reading data from hidden entries
+        v_data = Variant(CALI_TYPE_USR, nullptr, 0);
+    else
+        v_data = mP->make_variant(attr.type(), data);
+
     return mP->merge_node(node_id, attr_id, prnt_id, v_data, idmap);
 }
 
 EntryList
-CaliperMetadataDB::merge_snapshot(size_t n_nodes, const cali_id_t node_ids[], 
+CaliperMetadataDB::merge_snapshot(size_t n_nodes, const cali_id_t node_ids[],
                                   size_t n_imm,   const cali_id_t attr_ids[], const Variant values[],
                                   const IdMap& idmap) const
 {
@@ -702,14 +531,40 @@ CaliperMetadataDB::merge_snapshot(size_t n_nodes, const cali_id_t node_ids[],
 }
 
 EntryList
-CaliperMetadataDB::merge_snapshot(size_t n_nodes, const Node* const* nodes, 
-                                  size_t n_imm,   const cali_id_t attr_ids[], const Variant values[],
-                                  const CaliperMetadataAccessInterface& db)
+CaliperMetadataDB::merge_snapshot(const CaliperMetadataAccessInterface& db,
+                                  const std::vector<Entry>& rec)
 {
-    return mP->merge_snapshot(n_nodes, nodes, n_imm, attr_ids, values, db);
+    return mP->merge_snapshot(db, rec);
 }
 
-Node* 
+Entry
+CaliperMetadataDB::merge_entry(cali_id_t node_id, const IdMap& idmap)
+{
+    return mP->node(::map_id(node_id, idmap));
+}
+
+Entry
+CaliperMetadataDB::merge_entry(cali_id_t attr_id, const std::string& data, const IdMap& idmap)
+{
+    Attribute attr = mP->attribute(::map_id(attr_id, idmap));
+
+    return Entry(attr, mP->make_variant(attr.type(), data));
+}
+
+void
+CaliperMetadataDB::merge_global(cali_id_t node_id, const IdMap& idmap)
+{
+    return mP->merge_global(node_id, idmap);
+}
+
+void
+CaliperMetadataDB::merge_global(cali_id_t attr_id, const std::string& data, const IdMap& idmap)
+{
+    Attribute attr = mP->attribute(::map_id(attr_id, idmap));
+    mP->set_global(attr, mP->make_variant(attr.type(), data));
+}
+
+Node*
 CaliperMetadataDB::node(cali_id_t id) const
 {
     return mP->node(id);
@@ -728,7 +583,7 @@ CaliperMetadataDB::get_attribute(const std::string& name) const
 }
 
 std::vector<Attribute>
-CaliperMetadataDB::get_attributes() const
+CaliperMetadataDB::get_all_attributes() const
 {
     return mP->get_attributes();
 }
@@ -740,7 +595,7 @@ CaliperMetadataDB::make_tree_entry(size_t n, const Node* nodelist[], Node* paren
 }
 
 Attribute
-CaliperMetadataDB::create_attribute(const std::string& name, cali_attr_type type, int prop, 
+CaliperMetadataDB::create_attribute(const std::string& name, cali_attr_type type, int prop,
                                     int meta, const Attribute* meta_attr, const Variant* meta_data)
 {
     return mP->create_attribute(name, type, prop, meta, meta_attr, meta_data);
@@ -761,5 +616,20 @@ CaliperMetadataDB::set_global(const Attribute& attr, const Variant& value)
 std::vector<Entry>
 CaliperMetadataDB::import_globals(CaliperMetadataAccessInterface& db)
 {
-    return mP->import_globals(db);
+    return mP->import_globals(db, db.get_globals());
+}
+
+std::vector<Entry>
+CaliperMetadataDB::import_globals(CaliperMetadataAccessInterface& db, const std::vector<Entry>& globals)
+{
+    return mP->import_globals(db, globals);
+}
+
+std::ostream&
+CaliperMetadataDB::print_statistics(std::ostream& os)
+{
+    os << "CaliperMetadataDB: stored " << mP->m_nodes.size() 
+       << " nodes, " << mP->m_string_db.size() << " strings." << std::endl;
+    
+    return os;
 }

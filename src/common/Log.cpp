@@ -1,34 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 /// @file Log.cpp
 /// Log class implementation
@@ -36,6 +7,7 @@
 #include "caliper/common/Log.h"
 #include "caliper/common/RuntimeConfig.h"
 
+#include <cstring>
 #include <memory>
 #include <map>
 
@@ -47,10 +19,10 @@ struct LogImpl
 {
     // --- data
 
-    static unique_ptr<LogImpl>    s_instance;
     static const char*            s_prefix;
-
     static const ConfigSet::Entry s_configdata[];
+
+    static LogImpl*               s_instance;
 
     enum class Stream { StdOut, StdErr, None, File };
 
@@ -58,16 +30,14 @@ struct LogImpl
 
     Stream        m_stream;
     std::ofstream m_ofstream;
-    unsigned      m_verbosity;
+    int           m_verbosity;
 
     std::string   m_prefix;
 
     // --- helpers
 
-    void init_stream() {
-        string name = m_config.get("logfile").to_string();
-
-        const map<string, Stream> strmap { 
+    void init_stream(const std::string& name) {
+        const map<string, Stream> strmap {
             { "none",   Stream::None   },
             { "stdout", Stream::StdOut },
             { "stderr", Stream::StdErr } };
@@ -87,12 +57,14 @@ struct LogImpl
 
     // --- interface
 
-    LogImpl() 
-        : m_config { RuntimeConfig::init("log", s_configdata) },
-          m_prefix { s_prefix }
+    LogImpl()
+        : m_prefix { s_prefix }
     {
-        m_verbosity = m_config.get("verbosity").to_uint();
-        init_stream();
+        ConfigSet config =
+            RuntimeConfig::get_default_config().init("log", s_configdata);
+
+        m_verbosity = config.get("verbosity").to_int();
+        init_stream(config.get("logfile").to_string());
     }
 
     ostream& get_stream() {
@@ -105,26 +77,17 @@ struct LogImpl
             return m_ofstream;
         }
     }
-
-    static LogImpl* instance() {
-        if (!s_instance)
-            s_instance.reset(new LogImpl);
-
-        return s_instance.get();
-    }
 };
 
-unique_ptr<LogImpl>    LogImpl::s_instance { nullptr } ;
-const char*            LogImpl::s_prefix   { "== CALIPER: " };
-
+const char*            LogImpl::s_prefix = "== CALIPER: ";
 const ConfigSet::Entry LogImpl::s_configdata[] = {
     // key, type, value, short description, long description
-    { "verbosity", CALI_TYPE_UINT,   "1",
+    { "verbosity", CALI_TYPE_UINT,   "0",
       "Verbosity level",
       "Verbosity level.\n"
       "  0: no output\n"
       "  1: basic informational runtime output\n"
-      "  2: debug output" 
+      "  2: debug output"
     },
     { "logfile",   CALI_TYPE_STRING, "stderr",
       "Log file name",
@@ -134,34 +97,66 @@ const ConfigSet::Entry LogImpl::s_configdata[] = {
       "   none:   No output,\n"
       " or a log file name."
     },
-    ConfigSet::Terminator 
+    ConfigSet::Terminator
 };
+
+LogImpl* LogImpl::s_instance = nullptr;
 
 
 //
 // --- Log public interface
 //
 
-ostream& 
+ostream&
 Log::get_stream()
 {
-    return (LogImpl::instance()->get_stream() << LogImpl::instance()->m_prefix);
+    return LogImpl::s_instance->get_stream() << LogImpl::s_instance->m_prefix;
 }
 
-unsigned 
+ostream&
+Log::perror(int errnum, const char* msg)
+{
+    if (verbosity() < m_level)
+        return m_nullstream;
+
+#ifdef _GLIBCXX_HAVE_STRERROR_R
+    char buf[120];
+    return get_stream() << msg << strerror_r(errnum, buf, sizeof(buf));
+#else
+    return get_stream() << msg << strerror(errnum);
+#endif
+}
+
+int
 Log::verbosity()
 {
-    return LogImpl::instance()->m_verbosity;
+    if (LogImpl::s_instance == nullptr)
+        return -1;
+
+    return LogImpl::s_instance->m_verbosity;
 }
 
-void 
-Log::set_verbosity(unsigned v)
+void
+Log::set_verbosity(int v)
 {
-    LogImpl::instance()->m_verbosity = v;
+    LogImpl::s_instance->m_verbosity = v;
 }
 
-void 
+void
 Log::add_prefix(const std::string& prefix)
 {
-    LogImpl::instance()->m_prefix += prefix;
+    LogImpl::s_instance->m_prefix += prefix;
+}
+
+void
+Log::init()
+{
+    LogImpl::s_instance = new LogImpl;
+}
+
+void
+Log::fini()
+{
+    delete LogImpl::s_instance;
+    LogImpl::s_instance = nullptr;
 }

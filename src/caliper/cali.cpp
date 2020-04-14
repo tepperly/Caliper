@@ -1,36 +1,9 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // Caliper C interface implementation
+
+#include "caliper/caliper-config.h"
 
 #include "caliper/cali.h"
 
@@ -40,21 +13,36 @@
 #include "caliper/common/CompressedSnapshotRecord.h"
 #include "caliper/common/Log.h"
 #include "caliper/common/Node.h"
+#include "caliper/common/OutputStream.h"
 #include "caliper/common/RuntimeConfig.h"
 #include "caliper/common/Variant.h"
+
+#include "caliper/reader/CalQLParser.h"
+#include "caliper/reader/QueryProcessor.h"
 
 #include <cstring>
 #include <unordered_map>
 #include <mutex>
 
+#define SNAP_MAX 120
 
 using namespace cali;
+
+//
+// --- Miscellaneous
+//
+
+const char*
+cali_caliper_version()
+{
+    return CALIPER_VERSION;
+}
 
 //
 // --- Attribute interface
 //
 
-cali_id_t 
+cali_id_t
 cali_create_attribute(const char* name, cali_attr_type type, int properties)
 {
     Attribute a = Caliper::instance().create_attribute(name, type, properties);
@@ -66,8 +54,7 @@ cali_id_t
 cali_create_attribute_with_metadata(const char* name, cali_attr_type type, int properties,
                                     int n,
                                     const cali_id_t meta_attr_list[],
-                                    const void* meta_val_list[],
-                                    const size_t meta_size_list[])
+                                    const cali_variant_t meta_val_list[])
 {
     if (n < 1)
         return cali_create_attribute(name, type, properties);
@@ -83,7 +70,7 @@ cali_create_attribute_with_metadata(const char* name, cali_attr_type type, int p
         if (meta_attr[i] == Attribute::invalid)
             continue;
 
-        meta_data[i] = Variant(meta_attr[i].type(), meta_val_list[i], meta_size_list[i]);
+        meta_data[i] = Variant(meta_val_list[i]);
     }
 
     Attribute attr =
@@ -128,13 +115,12 @@ cali_attribute_name(cali_id_t attr_id)
 //
 
 void
-cali_push_snapshot(int scope, int n,
+cali_push_snapshot(int /*scope*/, int n,
                    const cali_id_t trigger_info_attr_list[],
-                   const void* trigger_info_val_list[],
-                   const size_t trigger_info_size_list[])
+                   const cali_variant_t trigger_info_val_list[])
 {
     Caliper   c;
-    
+
     Attribute attr[64];
     Variant   data[64];
 
@@ -142,28 +128,64 @@ cali_push_snapshot(int scope, int n,
 
     for (int i = 0; i < n; ++i) {
         attr[i] = c.get_attribute(trigger_info_attr_list[i]);
-        data[i]  = Variant(attr[i].type(), trigger_info_val_list[i], trigger_info_size_list[i]);
+        data[i] = Variant(trigger_info_val_list[i]);
     }
 
     SnapshotRecord::FixedSnapshotRecord<64> trigger_info_data;
     SnapshotRecord trigger_info(trigger_info_data);
 
-    c.make_entrylist(n, attr, data, trigger_info);
-    c.push_snapshot(scope, &trigger_info);
+    c.make_record(n, attr, data, trigger_info);
+
+    for (auto chn : c.get_all_channels())
+        if (chn->is_active())
+            c.push_snapshot(chn, &trigger_info);
+}
+
+void
+cali_channel_push_snapshot(cali_id_t chn_id, int /*scope*/, int n,
+                           const cali_id_t trigger_info_attr_list[],
+                           const cali_variant_t trigger_info_val_list[])
+{
+    Caliper   c;
+
+    Attribute attr[64];
+    Variant   data[64];
+
+    n = std::min(std::max(n, 0), 64);
+
+    for (int i = 0; i < n; ++i) {
+        attr[i] = c.get_attribute(trigger_info_attr_list[i]);
+        data[i] = Variant(trigger_info_val_list[i]);
+    }
+
+    SnapshotRecord::FixedSnapshotRecord<64> trigger_info_data;
+    SnapshotRecord trigger_info(trigger_info_data);
+
+    c.make_record(n, attr, data, trigger_info);
+
+    Channel* chn = c.get_channel(chn_id);
+
+    if (chn && chn->is_active())
+        c.push_snapshot(chn, &trigger_info);
 }
 
 size_t
-cali_pull_snapshot(int scopes, size_t len, unsigned char* buf)
+cali_channel_pull_snapshot(cali_id_t chn_id, int scopes, size_t len, unsigned char* buf)
 {
     Caliper c = Caliper::sigsafe_instance();
 
     if (!c)
         return 0;
 
-    SnapshotRecord::FixedSnapshotRecord<80> snapshot_buffer;
+    SnapshotRecord::FixedSnapshotRecord<SNAP_MAX> snapshot_buffer;
     SnapshotRecord snapshot(snapshot_buffer);
 
-    c.pull_snapshot(scopes, nullptr, &snapshot);
+    Channel* chn = c.get_channel(chn_id);
+
+    if (chn)
+        c.pull_snapshot(chn, scopes, nullptr, &snapshot);
+    else
+        Log(0).stream() << "cali_channel_pull_snapshot(): invalid channel id " << chn_id << std::endl;
 
     CompressedSnapshotRecord rec(len, buf);
     rec.append(&snapshot);
@@ -179,7 +201,7 @@ namespace
 {
     // Helper operator to unpack entries from
     // CompressedSnapshotRecordView::unpack()
-    
+
     class UnpackEntryOp {
         void*              m_arg;
         cali_entry_proc_fn m_fn;
@@ -215,7 +237,7 @@ namespace
             : m_arg(user_arg), m_fn(fn), m_id(id)
         { }
 
-        inline bool operator()(const Entry& e) {            
+        inline bool operator()(const Entry& e) {
             if (e.is_immediate() && e.attribute() == m_id) {
                 if ((*m_fn)(m_arg, e.attribute(), e.value().c_variant()) == 0)
                     return false;
@@ -227,7 +249,7 @@ namespace
             }
 
             return true;
-        }        
+        }
     };
 }
 
@@ -237,7 +259,7 @@ cali_unpack_snapshot(const unsigned char* buf,
                      cali_entry_proc_fn   proc_fn,
                      void*                user_arg)
 {
-    size_t pos = 0;    
+    size_t pos = 0;
     ::UnpackEntryOp op(proc_fn, user_arg);
 
     // FIXME: Need sigsafe instance? Only does read-only
@@ -290,7 +312,7 @@ cali_find_all_in_snapshot(const unsigned char* buf,
                           cali_entry_proc_fn   proc_fn,
                           void*                user_arg)
 {
-    size_t pos = 0;    
+    size_t pos = 0;
     ::UnpackAttributeEntryOp op(attr_id, proc_fn, user_arg);
 
     // FIXME: Need sigsafe instance? Only does read-only
@@ -318,244 +340,261 @@ cali_get(cali_id_t attr_id)
     return c.get(c.get_attribute(attr_id)).value().c_variant();
 }
 
+cali_variant_t
+cali_channel_get(cali_id_t chn_id, cali_id_t attr_id)
+{
+    Caliper c = Caliper::sigsafe_instance();
+    Channel* channel = c.get_channel(chn_id);
+
+    if (!c)
+        return cali_make_empty_variant();
+
+    return c.get(channel, c.get_attribute(attr_id)).value().c_variant();
+}
+
 //
 // --- Annotation interface
 //
 
-cali_err
+void
 cali_begin(cali_id_t attr_id)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
-    
-    if (attr.type() == CALI_TYPE_BOOL)
-        return c.begin(attr, Variant(true));
-    else
-        return CALI_ETYPE;
+
+    c.begin(attr, Variant(true));
 }
 
-cali_err
+void
 cali_end(cali_id_t attr_id)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    return c.end(attr);
+    c.end(attr);
 }
 
-cali_err  
+void
 cali_set(cali_id_t attr_id, const void* value, size_t size)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    return c.set(attr, Variant(attr.type(), value, size));
+    c.set(attr, Variant(attr.type(), value, size));
 }
 
-cali_err
+void
 cali_begin_double(cali_id_t attr_id, double val)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    if (attr.type() != CALI_TYPE_DOUBLE)
-        return CALI_ETYPE;
-
-    return c.begin(attr, Variant(val));
+    c.begin(attr, Variant(val));
 }
 
-cali_err
+void
 cali_begin_int(cali_id_t attr_id, int val)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    if (attr.type() != CALI_TYPE_INT)
-        return CALI_ETYPE;
-
-    return c.begin(attr, Variant(val));
+    c.begin(attr, Variant(val));
 }
 
-cali_err
+void
 cali_begin_string(cali_id_t attr_id, const char* val)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    if (attr.type() != CALI_TYPE_STRING)
-        return CALI_ETYPE;
-
-    return c.begin(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
+    c.begin(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
 }
 
-cali_err
+void
 cali_set_double(cali_id_t attr_id, double val)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    if (attr.type() != CALI_TYPE_DOUBLE)
-        return CALI_ETYPE;
-
-    return c.set(attr, Variant(val));
+    c.set(attr, Variant(val));
 }
 
-cali_err
+void
 cali_set_int(cali_id_t attr_id, int val)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    if (attr.type() != CALI_TYPE_INT)
-        return CALI_ETYPE;
-
-    return c.set(attr, Variant(val));
+    c.set(attr, Variant(val));
 }
 
-cali_err
+void
 cali_set_string(cali_id_t attr_id, const char* val)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_id);
 
-    if (attr.type() != CALI_TYPE_STRING)
-        return CALI_ETYPE;
-
-    return c.set(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
+    c.set(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
 }
 
-cali_err
+void
 cali_safe_end_string(cali_id_t attr_id, const char* val)
 {
-    cali_err  ret  = CALI_SUCCESS;
-
     Caliper   c;
-
     Attribute attr = c.get_attribute(attr_id);
     Variant   v    = c.get(attr).value();
 
-    if (attr.type() != CALI_TYPE_STRING || v.type() != CALI_TYPE_STRING)
-        ret = CALI_ETYPE;
+    if (v.type() != CALI_TYPE_STRING)
+        Log(1).stream() << ": Trying to end "
+                        << attr.name() << " which is not a string" << std::endl;
 
-    if (0 != strncmp(static_cast<const char*>(v.data()), val, v.size())) {
+    if (0 != strncmp(static_cast<const char*>(v.data()), val, v.size()))
         // FIXME: Replace log output with smart error tracker
-        Log(1).stream() << "begin/end marker mismatch: Trying to end " 
+        Log(1).stream() << "begin/end marker mismatch: Trying to end "
                         << attr.name() << "=" << val
-                        << " but current value for " 
+                        << " but current value for "
                         << attr.name() << " is \"" << v.to_string() << "\""
                         << std::endl;
-    }
 
     c.end(attr);
-
-    return ret;    
 }
 
 //
-// --- By-name annotation interface 
+// --- By-name annotation interface
 //
 
-cali_err
+void
 cali_begin_byname(const char* attr_name)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_BOOL, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid)
-        return CALI_EINV;
-    if (attr.type() != CALI_TYPE_BOOL)
-        return CALI_ETYPE;
-
-    return c.begin(attr, Variant(true));
+    c.begin(attr, Variant(true));
 }
 
-cali_err
+void
 cali_begin_double_byname(const char* attr_name, double val)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_DOUBLE, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid || attr.type() != CALI_TYPE_DOUBLE)
-        return CALI_EINV;
-
-    return c.begin(attr, Variant(val));
+    c.begin(attr, Variant(val));
 }
 
-cali_err
+void
 cali_begin_int_byname(const char* attr_name, int val)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_INT, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid || attr.type() != CALI_TYPE_INT)
-        return CALI_EINV;
-
-    return c.begin(attr, Variant(val));
+    c.begin(attr, Variant(val));
 }
 
-cali_err
+void
 cali_begin_string_byname(const char* attr_name, const char* val)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_STRING, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid || attr.type() != CALI_TYPE_STRING)
-        return CALI_EINV;
-
-    return c.begin(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
+    c.begin(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
 }
 
-cali_err
+void
 cali_set_double_byname(const char* attr_name, double val)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_DOUBLE, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid || attr.type() != CALI_TYPE_DOUBLE)
-        return CALI_EINV;
-
-    return c.set(attr, Variant(val));
+    c.set(attr, Variant(val));
 }
 
-cali_err
+void
 cali_set_int_byname(const char* attr_name, int val)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_INT, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid || attr.type() != CALI_TYPE_INT)
-        return CALI_EINV;
-
-    return c.set(attr, Variant(val));
+    c.set(attr, Variant(val));
 }
 
-cali_err
+void
 cali_set_string_byname(const char* attr_name, const char* val)
 {
     Caliper   c;
     Attribute attr =
         c.create_attribute(attr_name, CALI_TYPE_STRING, CALI_ATTR_DEFAULT);
 
-    if (attr == Attribute::invalid || attr.type() != CALI_TYPE_STRING)
-        return CALI_EINV;
-
-    return c.set(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
+    c.set(attr, Variant(CALI_TYPE_STRING, val, strlen(val)));
 }
 
-cali_err
+void
 cali_end_byname(const char* attr_name)
 {
     Caliper   c;
     Attribute attr = c.get_attribute(attr_name);
 
-    return c.end(attr);
+    c.end(attr);
 }
+
+// --- Set globals
+//
+
+void
+cali_set_global_double_byname(const char* name, double val)
+{
+    Caliper   c;
+    Attribute attr =
+        c.create_attribute(name, CALI_TYPE_DOUBLE, CALI_ATTR_GLOBAL | CALI_ATTR_SKIP_EVENTS);
+
+    // TODO: check for existing incompatible attribute key
+
+    c.set(attr, cali_make_variant_from_double(val));
+}
+
+void
+cali_set_global_int_byname(const char* name, int val)
+{
+    Caliper   c;
+    Attribute attr =
+        c.create_attribute(name, CALI_TYPE_INT, CALI_ATTR_GLOBAL | CALI_ATTR_SKIP_EVENTS);
+
+    // TODO: check for existing incompatible attribute key
+
+    c.set(attr, cali_make_variant_from_int(val));
+}
+
+void
+cali_set_global_string_byname(const char* name, const char* val)
+{
+    Caliper   c;
+    Attribute attr =
+        c.create_attribute(name, CALI_TYPE_STRING, CALI_ATTR_GLOBAL | CALI_ATTR_SKIP_EVENTS);
+
+    // TODO: check for existing incompatible attribute key
+
+    c.set(attr, Variant(CALI_TYPE_STRING, val, strlen(val)+1));
+}
+
+void
+cali_set_global_uint_byname(const char* name, uint64_t val)
+{
+    Caliper   c;
+    Attribute attr =
+        c.create_attribute(name, CALI_TYPE_UINT, CALI_ATTR_GLOBAL | CALI_ATTR_SKIP_EVENTS);
+
+    // TODO: check for existing incompatible attribute key
+
+    c.set(attr, cali_make_variant_from_uint(val));
+}
+
+// --- Config API
+//
 
 void
 cali_config_preset(const char* key, const char* value)
@@ -565,7 +604,7 @@ cali_config_preset(const char* key, const char* value)
                         << "cali_config_preset(\"" << key << "\", \"" << value
                         << "\") has no effect." << std::endl;
 
-    RuntimeConfig::get_default_config()->preset(key, value);
+    RuntimeConfig::get_default_config().preset(key, value);
 }
 
 void
@@ -576,29 +615,172 @@ cali_config_set(const char* key, const char* value)
                         << "cali_config_set(\"" << key << "\", \"" << value
                         << "\") has no effect." << std::endl;
 
-    RuntimeConfig::get_default_config()->set(key, value);
-}
-
-void
-cali_config_define_profile(const char* name, const char* keyvallist[][2])
-{
-    RuntimeConfig::get_default_config()->define_profile(name, keyvallist);
+    RuntimeConfig::get_default_config().set(key, value);
 }
 
 void
 cali_config_allow_read_env(int allow)
 {
-    RuntimeConfig::get_default_config()->allow_read_env(allow != 0);
+    RuntimeConfig::get_default_config().allow_read_env(allow != 0);
+}
+
+struct _cali_configset_t {
+    std::map<std::string, std::string> cfgset;
+};
+
+
+/**
+ *
+ * When the BG/Q machines die at LLNL, we can delete these.
+ * They exist because BG/Q had Clang compilers that *mostly*
+ * supported C++11, except for features like std::vector<T>::emplace.
+ */
+
+template<typename Container, typename = void>
+struct emplace_helper{
+    template<typename Emplaced>
+    static void emplace(Container& emplace_into, Emplaced object){
+        emplace_into.insert(object);
+    }
+};
+
+template<typename Container>
+struct emplace_helper<
+   Container,
+   typename std::enable_if<
+       std::is_same<
+           decltype(std::declval<Container>().emplace(std::make_pair("",""))),
+           decltype(std::declval<Container>().emplace(std::make_pair("","")))
+       >::value
+       , void
+   >::type 
+> {
+    template<typename Emplaced>
+    static void emplace(Container& emplace_into, Emplaced&& object){
+        emplace_into.emplace(object);
+    }
+};
+
+cali_configset_t
+cali_create_configset(const char* keyvallist[][2])
+{
+    cali_configset_t cfg = new _cali_configset_t;
+
+    if (!keyvallist)
+        return cfg;
+
+    for ( ; (*keyvallist)[0] && (*keyvallist)[1]; ++keyvallist){
+        emplace_helper<decltype(cfg->cfgset)>::emplace( cfg->cfgset, std::make_pair(std::string((*keyvallist)[0]),
+                                            std::string((*keyvallist)[1])) );
+    }
+
+    return cfg;
+}
+
+void
+cali_delete_configset(cali_configset_t cfg)
+{
+    delete cfg;
+}
+
+void
+cali_configset_set(cali_configset_t cfg, const char* key, const char* value)
+{
+    cfg->cfgset[key] = value;
+}
+
+cali_id_t
+cali_create_channel(const char* name, int flags, cali_configset_t cfgset)
+{
+    RuntimeConfig cfg;
+
+    cfg.allow_read_env(flags & CALI_CHANNEL_ALLOW_READ_ENV);
+    cfg.import(cfgset->cfgset);
+
+    Caliper c;
+    Channel* chn = c.create_channel(name, cfg);
+
+    if (!chn)
+        return CALI_INV_ID;
+    if (flags & CALI_CHANNEL_LEAVE_INACTIVE)
+        c.deactivate_channel(chn);
+
+    return chn->id();
+}
+
+void
+cali_delete_channel(cali_id_t chn_id)
+{
+    Caliper c;
+    Channel* chn = c.get_channel(chn_id);
+
+    if (chn)
+        c.delete_channel(chn);
+    else
+        Log(0).stream() << "cali_channel_delete(): invalid channel id " << chn_id << std::endl;
+}
+
+void
+cali_activate_channel(cali_id_t chn_id)
+{
+    Caliper c;
+    Channel* chn = c.get_channel(chn_id);
+
+    if (chn)
+        c.activate_channel(chn);
+    else
+        Log(0).stream() << "cali_activate_channel(): invalid channel id " << chn_id << std::endl;
+}
+
+void
+cali_deactivate_channel(cali_id_t chn_id)
+{
+    Caliper c;
+    Channel* chn = c.get_channel(chn_id);
+
+    if (chn)
+        c.deactivate_channel(chn);
+    else
+        Log(0).stream() << "cali_deactivate_channel(): invalid channel id " << chn_id << std::endl;
+}
+
+int
+cali_channel_is_active(cali_id_t chn_id)
+{
+    Channel* chn = Caliper::instance().get_channel(chn_id);
+
+    if (!chn) {
+        Log(0).stream() << "cali_channel_is_active(): invalid channel id " << chn_id << std::endl;
+        return 0;
+    }
+
+    return (chn->is_active() ? 1 : 0);
 }
 
 void
 cali_flush(int flush_opts)
 {
     Caliper c;
-    c.flush_and_write(nullptr);
+
+    for (auto chn : c.get_all_channels())
+        if (chn->is_active()) {
+            c.flush_and_write(chn, nullptr);
+
+            if (flush_opts & CALI_FLUSH_CLEAR_BUFFERS)
+                c.clear(chn);
+        }
+}
+
+void
+cali_channel_flush(cali_id_t chn_id, int flush_opts)
+{
+    Caliper  c;
+    Channel* chn = c.get_channel(chn_id);
+
+    c.flush_and_write(chn, nullptr);
 
     if (flush_opts & CALI_FLUSH_CLEAR_BUFFERS)
-        c.clear();
+        c.clear(chn);
 }
 
 void
@@ -615,14 +797,91 @@ cali_is_initialized()
 
 //
 // --- Helper functions for high-level macro interface
-// 
+//
+
+namespace cali
+{
+
+extern Attribute class_iteration_attr;
+
+}
 
 cali_id_t
 cali_make_loop_iteration_attribute(const char* name)
 {
-    char tmp[80] = "iteration#";
-    strncpy(tmp+10, name, 69);
-    tmp[79] = '\0';
+    Variant v_true(true);
 
-    return cali_create_attribute(tmp, CALI_TYPE_INT, CALI_ATTR_ASVALUE);
+    Caliper   c;
+    Attribute attr =
+        c.create_attribute(std::string("iteration#").append(name),
+                           CALI_TYPE_INT,
+                           CALI_ATTR_ASVALUE,
+                           1, &class_iteration_attr, &v_true);
+
+    return attr.id();
+}
+
+//
+// --- C++ convenience API
+//
+
+namespace cali
+{
+
+cali_id_t
+create_channel(const char* name, int flags, const config_map_t& cfgmap)
+{
+    RuntimeConfig cfg;
+
+    cfg.allow_read_env(flags & CALI_CHANNEL_ALLOW_READ_ENV);
+    cfg.import(cfgmap);
+
+    Caliper  c;
+    Channel* chn = c.create_channel(name, cfg);
+
+    if (!chn)
+        return CALI_INV_ID;
+    if (flags & CALI_CHANNEL_LEAVE_INACTIVE)
+        c.deactivate_channel(chn);
+
+    return chn->id();
+}
+
+void
+write_report_for_query(cali_id_t chn_id, const char* query, int flush_opts, std::ostream& os)
+{
+    Caliper  c;
+    Channel* chn = c.get_channel(chn_id);
+
+    if (!chn) {
+        Log(0).stream() << "write_report_for_query(): invalid channel id " << chn_id
+                        << std::endl;
+
+        return;
+    }
+
+    CalQLParser parser(query);
+
+    if (parser.error()) {
+        Log(0).stream() << "write_report_for_query(): query parse error: "
+                        << parser.error_msg()
+                        << std::endl;
+
+        return;
+    }
+
+    QuerySpec    spec(parser.spec());
+    OutputStream stream;
+
+    stream.set_stream(&os);
+
+    QueryProcessor queryP(spec, stream);
+
+    c.flush(chn, nullptr, [&queryP](CaliperMetadataAccessInterface& db, const std::vector<Entry>& rec){
+            queryP.process_record(db, rec);
+        });
+
+    queryP.flush(c);
+}
+
 }

@@ -1,35 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// Modified by Aimee Sylvia
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // Print expanded records
 
@@ -58,6 +28,8 @@ struct Expand::ExpandImpl
 {
     set<string>  m_selected;
     set<string>  m_deselected;
+
+    std::map<string, string> m_aliases;
 
     OutputStream m_os;
 
@@ -98,6 +70,8 @@ struct Expand::ExpandImpl
                                       spec.attribute_selection.list.end());
             break;
         }
+
+        m_aliases = spec.aliases;
     }
     
     void print(CaliperMetadataAccessInterface& db, const EntryList& list) {
@@ -127,7 +101,15 @@ struct Expand::ExpandImpl
 
                 for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
                     if ((*it)->attribute() != prev_attr_id) {
-                        os << (nentry++ ? "," : "") << db.get_attribute((*it)->attribute()).name() << '=';
+                        std::string name = db.get_attribute((*it)->attribute()).name();
+
+                        {
+                            auto it = m_aliases.find(name);
+                            if (it != m_aliases.end())
+                                name = it->second;
+                        }
+                        
+                        os << (nentry++ ? "," : "") << name << '=';
                         prev_attr_id = (*it)->attribute();
                     } else {
                         os << '/';
@@ -140,6 +122,12 @@ struct Expand::ExpandImpl
                 if ((!m_selected.empty() && m_selected.count(name) == 0) || m_deselected.count(name))
                     continue;
 
+                {
+                    auto it = m_aliases.find(name);
+                    if (it != m_aliases.end())
+                        name = it->second;
+                }
+
                 os << (nentry++ ? "," : "") << name << '=' << e.value();
             }
         }
@@ -147,8 +135,10 @@ struct Expand::ExpandImpl
         if (nentry > 0) {
             std::lock_guard<std::mutex>
                 g(m_os_lock);
+
+            std::ostream* real_os = m_os.stream();
             
-            m_os.stream() << os.str() << endl;
+            *real_os << os.str() << endl;
         }
     }
 };

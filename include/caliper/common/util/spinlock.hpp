@@ -1,3 +1,6 @@
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
+
 /// \file  spinlock.hpp
 /// \brief spinlock class
 
@@ -10,14 +13,12 @@ namespace util
 {
     
 class spinlock {
-    std::atomic_flag m_lock;
+    std::atomic_flag m_lock = ATOMIC_FLAG_INIT;
 
 public:
 
     spinlock()
-        {
-            m_lock.clear();
-        }
+        { }
 
     void lock() {
         while (m_lock.test_and_set(std::memory_order_acquire))

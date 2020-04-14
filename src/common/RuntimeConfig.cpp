@@ -1,34 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // RuntimeConfig class implementation
 
@@ -52,8 +23,6 @@ using namespace std;
 
 namespace
 {
-    const string prefix { "cali" };
-
     const char*  builtin_profiles =
         "# [serial-trace]\n"
         "CALI_SERVICES_ENABLE=event,recorder,timestamp,trace\n"
@@ -66,23 +35,34 @@ namespace
         "CALI_EVENT_ENABLE_SNAPSHOT_INFO=false\n"
         "CALI_TIMER_SNAPSHOT_DURATION=true\n"
         "CALI_TIMER_INCLUSIVE_DURATION=false\n"
-        "CALI_REPORT_CONFIG=\"select sum(sum#time.duration) format tree\"\n"
+        "CALI_TIMER_UNIT=sec\n"
+        "CALI_REPORT_CONFIG=\"select inclusive_sum(sum#time.duration) as \\\"Inclusive time\\\",sum(sum#time.duration) as \\\"Exclusive time\\\",percent_total(sum#time.duration) as \\\"Time %\\\" group by prop:nested format tree\"\n"
+        "CALI_REPORT_FILENAME=stderr\n"
+        "# [mpi-runtime-report]\n"
+        "CALI_SERVICES_ENABLE=aggregate,event,mpi,mpireport,timestamp\n"
+        "CALI_MPI_BLACKLIST=MPI_Comm_rank,MPI_Comm_size,MPI_Wtick,MPI_Wtime\n"
+        "CALI_EVENT_ENABLE_SNAPSHOT_INFO=false\n"
+        "CALI_TIMER_SNAPSHOT_DURATION=true\n"
+        "CALI_TIMER_INCLUSIVE_DURATION=false\n"
+        "CALI_TIMER_UNIT=sec\n"
+        "CALI_MPIREPORT_CONFIG=\"select min(sum#time.duration) as \\\"Min time/rank\\\",max(sum#time.duration) as \\\"Max time/rank\\\", avg(sum#time.duration) as \\\"Avg time/rank\\\", percent_total(sum#time.duration) as \\\"Time % (total)\\\" group by prop:nested format tree\"\n"
+        "CALI_MPIREPORT_FILENAME=stderr\n"
         "# [thread-trace]\n"
         "CALI_SERVICES_ENABLE=event:pthread:recorder:timestamp:trace\n"
-        "# [mpi-trace]\n"
-        "CALI_SERVICES_ENABLE=event:mpi:recorder:timestamp:trace\n"
-        "# [load-sampling]\n"
-        "CALI_SERVICES_ENABLE=event:recorder:timestamp:libpfm\n"
-        "CALI_LOG_VERBOSITY=2\n";
+        "# [mpi-msg-trace]\n"
+        "CALI_SERVICES_ENABLE=event,mpi,recorder,timestamp,trace\n"
+        "CALI_MPI_BLACKLIST=MPI_Comm_rank,MPI_Comm_size,MPI_Wtick,MPI_Wtime\n"
+        "CALI_MPI_MSG_TRACING=true\n"
+        "CALI_TIMER_SNAPSHOT_DURATION=true\n"
+        "CALI_TIMER_INCLUSIVE_DURATION=false\n"
+        "CALI_TIMER_OFFSET=true\n"
+        "CALI_RECORDER_FILENAME=%mpi.rank%.cali\n";
 
     string config_var_name(const string& name, const string& key) {
         // make uppercase PREFIX_NAMESPACE_KEY string
 
-        string str;
-
-        for ( string s : { prefix, string("_"), name, string("_"), key } )
-            str.append(s);
-
+        string str = string("CALI_") + name + string("_") + key;
+        
         transform(str.begin(), str.end(), str.begin(), ::toupper);
 
         return str;
@@ -154,10 +134,9 @@ struct ConfigSetImpl
 struct RuntimeConfig::RuntimeConfigImpl
 {
     // --- data
-    static unique_ptr<RuntimeConfig>         s_default_config;
     static const ConfigSet::Entry            s_configdata[];
 
-    bool                                     m_allow_read_env = false;
+    bool                                     m_allow_read_env = true;
 
     // combined profile: initially receives settings made through "add" API,
     // then merges all selected profiles in here
@@ -289,6 +268,11 @@ struct RuntimeConfig::RuntimeConfigImpl
         m_top_profile[key] = value;
     }
 
+    void import(const std::map<std::string, std::string>& values) {
+        for (auto& p : values)
+            m_top_profile[p.first] = p.second;
+    }
+
     shared_ptr<ConfigSetImpl> init_configset(const char* name, const ConfigSet::Entry* list) {
         if (m_database.empty())
             init_config_database();
@@ -306,15 +290,6 @@ struct RuntimeConfig::RuntimeConfigImpl
         return ret;
     }
 
-    void define_profile(const char* name, const char* keyvallist[][2]) {
-        ::config_profile_t profile;
-
-        for ( ; (*keyvallist)[0] && (*keyvallist)[1]; ++keyvallist)
-            profile[string((*keyvallist)[0])] = string((*keyvallist)[1]);
-
-        m_config_profiles[string(name)] = std::move(profile);
-    }
-
     void print(std::ostream& os) const {
         for ( auto set : m_database )
             for ( auto entry : set.second->m_dict )
@@ -324,8 +299,6 @@ struct RuntimeConfig::RuntimeConfigImpl
                    << '=' << entry.second.value << std::endl;
     }
 };
-
-unique_ptr<RuntimeConfig> RuntimeConfig::RuntimeConfigImpl::s_default_config { nullptr };
 
 const ConfigSet::Entry RuntimeConfig::RuntimeConfigImpl::s_configdata[] = {
     { "profile",  CALI_TYPE_STRING, "default",
@@ -375,7 +348,7 @@ RuntimeConfig::get(const char* set, const char* key)
 }
 
 ConfigSet
-RuntimeConfig::init_configset(const char* name, const ConfigSet::Entry* list)
+RuntimeConfig::init(const char* name, const ConfigSet::Entry* list)
 {
     return ConfigSet(mP->init_configset(name, list));
 }
@@ -393,10 +366,9 @@ RuntimeConfig::set(const char* key, const std::string& value)
 }
 
 void
-RuntimeConfig::define_profile(const char* name,
-                              const char* keyvallist[][2])
+RuntimeConfig::import(const std::map<std::string,std::string>& values)
 {
-    mP->define_profile(name, keyvallist);
+    mP->import(values);
 }
 
 void
@@ -422,19 +394,10 @@ RuntimeConfig::allow_read_env(bool allow)
 // static interface
 //
 
-ConfigSet
-RuntimeConfig::init(const char* name, const ConfigSet::Entry* list)
-{
-    return ConfigSet(get_default_config()->init_configset(name, list));
-}
-
-RuntimeConfig*
+RuntimeConfig
 RuntimeConfig::get_default_config()
 {
-    if (!RuntimeConfigImpl::s_default_config) {
-        RuntimeConfigImpl::s_default_config.reset(new RuntimeConfig);
-        RuntimeConfigImpl::s_default_config->allow_read_env(true);
-    }
-    
-    return RuntimeConfigImpl::s_default_config.get();
+    static RuntimeConfig s_default_config;
+
+    return s_default_config;
 }

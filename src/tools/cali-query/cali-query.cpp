@@ -1,37 +1,9 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// Modified by Aimee Sylvia
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // A basic tool for Caliper metadata queries
+
+#include "caliper/caliper-config.h"
 
 #include "AttributeExtract.h"
 #include "query_common.h"
@@ -39,20 +11,18 @@
 #include "caliper/tools-util/Args.h"
 
 #include "caliper/cali.h"
+#include "caliper/cali-manager.h"
 
 #include "caliper/reader/Aggregator.h"
+#include "caliper/reader/CaliReader.h"
 #include "caliper/reader/CaliperMetadataDB.h"
 #include "caliper/reader/FormatProcessor.h"
 #include "caliper/reader/RecordProcessor.h"
 #include "caliper/reader/RecordSelector.h"
 
-#include "caliper/common/ContextRecord.h"
 #include "caliper/common/Node.h"
 #include "caliper/common/OutputStream.h"
 #include "caliper/common/StringConverter.h"
-
-#include "caliper/common/csv/CsvReader.h"
-#include "caliper/common/csv/CsvWriter.h"
 
 #include "caliper/common/util/split.hpp"
 
@@ -74,11 +44,11 @@ namespace
     const char* usage = "cali-query [OPTION]... [FILE]..."
         "\n  Read, merge, and filter caliper streams";
 
-    const Args::Table option_table[] = { 
+    const Args::Table option_table[] = {
         // name, longopt name, shortopt char, has argument, info, argument info
-        { "select", "select", 's', true,  
-          "Filter records by selected attributes: [-]attribute[(<|>|=)value][:...]", 
-          "QUERY_STRING" 
+        { "select", "select", 's', true,
+          "Filter records by selected attributes: [-]attribute[(<|>|=)value][:...]",
+          "QUERY_STRING"
         },
         { "aggregate", "aggregate", 'a', true,
           "Aggregate snapshots using the given aggregation operators: (sum(attribute)|count)[:...]",
@@ -88,26 +58,26 @@ namespace
           "List of attributes to aggregate over (collapses all other attributes): attribute[:...]",
           "ATTRIBUTES"
         },
-        { "expand", "expand", 'e', false,  
-          "Expand context records and print the selected attributes (default: all)", 
-          nullptr 
+        { "expand", "expand", 'e', false,
+          "Expand context records and print the selected attributes (default: all)",
+          nullptr
         },
-        { "attributes", "print-attributes", 0, true,  
-          "Select attributes to print (or hide) in expanded output: [-]attribute[:...]", 
-          "ATTRIBUTES" 
+        { "attributes", "print-attributes", 0, true,
+          "Select attributes to print (or hide) in expanded output: [-]attribute[:...]",
+          "ATTRIBUTES"
         },
-        { "sort", "sort-by", 'S', true,  
-          "Sort rows in table format: attribute[:...]", 
-          "SORT_ATTRIBUTES" 
+        { "sort", "sort-by", 'S', true,
+          "Sort rows in table format: attribute[:...]",
+          "SORT_ATTRIBUTES"
         },
 	{ "format", "format", 'f', true,
           "Format output according to format string: %[<width+alignment(l|r|c)>]attr_name%...",
           "FORMAT_STRING"
-        }, 
+        },
 	{ "title",  "title",  'T', true,
           "Set the title row for formatted output",
           "STRING"
-        }, 
+        },
         { "table", "table", 't', false,
           "Print attributes in human-readable table form",
           nullptr
@@ -132,22 +102,21 @@ namespace
           "Execute a query in CalQL format",
           "QUERY STRING"
         },
-        { "profile", "profile", 'p', false,
-          "Show progress and cali-query performance summary",
-          nullptr
+        { "caliper-config", "caliper-config", 'P', true,
+          "Set Caliper configuration for profiling cali-query",
+          "CALIPER-CONFIG"
         },
-        { "caliper-config", "caliper-config", 0, true,
+        { "caliper-config-vars", "caliper-config-vars", 0, true,
           "Caliper configuration flags (for cali-query profiling)",
           "KEY=VALUE,..."
         },
-        { "verbose", "verbose", 'v', false,
-          "Be verbose.",
-          nullptr
-        },
-        { "output", "output", 'o', true,  "Set the output file name", "FILE"  },
-        { "help",   "help",   'h', false, "Print help message",       nullptr },
+        { "verbose", "verbose", 'v', false, "Be verbose.",              nullptr },
+        { "version", "version", 'V', false, "Print version number",     nullptr },
+        { "output",  "output",  'o', true,  "Set the output file name", "FILE"  },
+        { "help",    "help",    'h', true,  "Print help message",       nullptr },
         { "list-attributes", "list-attributes", 0, false,
           "Extract and list attributes in Caliper stream instead of snapshot records",
+          nullptr
         },
         { "list-globals", "list-globals", 0, false,
           "Extract and list global per-run attributes",
@@ -165,7 +134,7 @@ namespace
 
         FilterDuplicateNodes()
             : m_max_node { 0 }
-            { } 
+            { }
 
         void operator()(CaliperMetadataAccessInterface& db, const Node* node, NodeProcessFn push) {
             cali_id_t id = node->id();
@@ -173,7 +142,7 @@ namespace
             if (id != CALI_INV_ID) {
                 if (id < m_max_node) {
                     return;
-                } else 
+                } else
                     m_max_node = id;
             }
 
@@ -189,7 +158,7 @@ namespace
         NodeFilterFn  m_filter_fn; ///< This processing step
         NodeProcessFn m_push_fn;   ///< Next processing step
 
-        NodeFilterStep(NodeFilterFn filter_fn, NodeProcessFn push_fn) 
+        NodeFilterStep(NodeFilterFn filter_fn, NodeProcessFn push_fn)
             : m_filter_fn { filter_fn }, m_push_fn { push_fn }
             { }
 
@@ -200,45 +169,61 @@ namespace
 
 }
 
+// A ChannelController for printing cali-query progress
+class ProgressController : public cali::ChannelController
+{
+public:
+
+    ProgressController()
+        : ChannelController("progress", 0, {
+                { "CALI_SERVICES_ENABLE",  "event,textlog,timestamp" },
+                { "CALI_CHANNEL_FLUSH_ON_EXIT", "false" },
+                { "CALI_EVENT_TRIGGER",    "cali-query.stream"       },
+                { "CALI_TEXTLOG_TRIGGER",  "cali-query.stream" },
+                { "CALI_TEXTLOG_FILENAME", "stderr"            },
+                { "CALI_TEXTLOG_FORMATSTRING",
+                        "cali-query: Processed %[52]cali-query.stream% (thread %[2]thread%): %[8]time.inclusive.duration% us" }
+            })
+    {}
+
+    static ChannelController* create(const ConfigManager::Options&) {
+        return new ProgressController;
+    }
+};
+
+ConfigManager::ConfigInfo ProgressInfo = {
+    "{ \"name\": \"caliquery-progress\", \"description\": \"Print cali-query progress (when processing multiple files)\" }",
+    ProgressController::create,
+    nullptr
+};
+
+const ConfigManager::ConfigInfo* caliquery_cfglist[] = {
+   &ProgressInfo,
+   nullptr
+};
 
 void setup_caliper_config(const Args& args)
 {
-    const char* progressmonitor_profile[][2] = {
-        { "CALI_SERVICES_ENABLE", "event:report:textlog:trace:timestamp" },
-        { "CALI_EVENT_TRIGGER",   "annotation:cali-query.stream"         },
-        { "CALI_TEXTLOG_TRIGGER", "cali-query.stream" },
+    //   Configure the default config, which can be provided by the user through
+    // the "cali-query_caliper.config" file or the "caliper-config" command line arg
 
-        { "CALI_TEXTLOG_FORMATSTRING",
-          "cali-query: Processed %[52]cali-query.stream% (thread %[2]thread%): %[8]time.inclusive.duration% us" },
-
-        { "CALI_REPORT_CONFIG",
-          "SELECT annotation,time.inclusive.duration WHERE event.end#annotation FORMAT table" },
-
-        { NULL, NULL }
-    };
-    
     cali_config_preset("CALI_LOG_VERBOSITY", "0");
-    cali_config_preset("CALI_CALIPER_ATTRIBUTE_PROPERTIES", "annotation=process_scope:nested");
+    cali_config_preset("CALI_CALIPER_ATTRIBUTE_DEFAULT_SCOPE", "process");
 
     cali_config_allow_read_env(false);
-
-    cali_config_define_profile("caliquery-progressmonitor", progressmonitor_profile);
-
     cali_config_set("CALI_CONFIG_FILE", "cali-query_caliper.config");
-    
+
     if (args.is_set("verbose"))
         cali_config_preset("CALI_LOG_VERBOSITY", "1");
-    if (args.is_set("profile"))
-        cali_config_set("CALI_CONFIG_PROFILE", "caliquery-progressmonitor");
 
-    std::vector<std::string> config_list = 
-        StringConverter(args.get("caliper-config")).to_stringlist();
+    std::vector<std::string> config_list =
+        StringConverter(args.get("caliper-config-vars")).to_stringlist();
 
     for (const std::string entry : config_list) {
         auto p = entry.find('=');
 
         if (p == std::string::npos) {
-            std::cerr << "cali-query: error: invalid Caliper configuration flag format \"" 
+            std::cerr << "cali-query: error: invalid Caliper configuration flag format \""
                       << entry << "\" (missing \"=\")" << std::endl;
             continue;
         }
@@ -247,13 +232,13 @@ void setup_caliper_config(const Args& args)
     }
 }
 
-
 //
 // --- main()
 //
 
 int main(int argc, const char* argv[])
 {
+    ConfigManager::add_controllers(caliquery_cfglist);
 
     Args args(::option_table);
 
@@ -269,29 +254,41 @@ int main(int argc, const char* argv[])
                  << "  Available options: ";
 
             args.print_available_options(cerr);
-            
+
             return -1;
         }
 
         if (args.is_set("help")) {
-            cerr << usage << "\n\n";
+            print_caliquery_help(args, usage);
+            return 0;
+        }
 
-            args.print_available_options(cerr);
-
+        if (args.is_set("version")) {
+            cerr << cali_caliper_version() << std::endl;
             return 0;
         }
     }
 
     bool verbose = args.is_set("verbose");
-    
+
     // The Caliper config setup must run before Caliper runtime initialization
     setup_caliper_config(args);
-    
-    cali::Annotation("cali-query.build.date", CALI_ATTR_GLOBAL).set(__DATE__);
-    cali::Annotation("cali-query.build.time", CALI_ATTR_GLOBAL).set(__TIME__);
+
+    ConfigManager mgr(args.get("caliper-config").c_str());
+
+    if (mgr.error()) {
+        std::cerr << "cali-query: Caliper config parse error: "
+                  << mgr.error_msg() << std::endl;
+        return -1;
+    }
+
+    mgr.start();
+
+    cali_set_global_string_byname("cali-query.build.date", __DATE__);
+    cali_set_global_string_byname("cali-query.build.time", __TIME__);
 #ifdef __GNUC__
-    cali::Annotation("cali-query.build.compiler", CALI_ATTR_GLOBAL).set("gnu-" __VERSION__);
-#endif 
+    cali_set_global_string_byname("cali-query.build.compiler", "gnu-" __VERSION__);
+#endif
 
     CALI_MARK_BEGIN("Initialization");
 
@@ -316,11 +313,11 @@ int main(int argc, const char* argv[])
         cerr << "cali-query: Invalid query: " << query_parser.error_msg() << std::endl;
         return -2;
     }
-    
+
     QuerySpec         spec = query_parser.spec();
 
     // setup format spec
-    
+
     FormatProcessor   format(spec, stream);
 
     NodeProcessFn     node_proc = [](CaliperMetadataAccessInterface&,const Node*) { return; };
@@ -333,23 +330,23 @@ int main(int argc, const char* argv[])
             snap_proc = format;
         else
             snap_proc = aggregate;
-    
+
         if (spec.filter.selection == QuerySpec::FilterSelection::List)
             snap_proc = SnapshotFilterStep(RecordSelector(spec), snap_proc);
-    
+
         if (args.is_set("list-attributes")) {
             node_proc = AttributeExtract(snap_proc);
             snap_proc = [](CaliperMetadataAccessInterface&,const EntryList&){ return; };
         }
     }
-        
+
     node_proc = ::NodeFilterStep(::FilterDuplicateNodes(), node_proc);
 
     std::vector<std::string> files = args.arguments();
 
     if (files.empty())
         files.push_back(""); // read from stdin if no files are given
-    
+
     unsigned num_threads =
         std::min<unsigned>(files.size(), std::stoul(args.get("threads", "4")));
 
@@ -362,7 +359,7 @@ int main(int argc, const char* argv[])
     Annotation("cali-query.num-threads", CALI_ATTR_SCOPE_PROCESS | CALI_ATTR_SKIP_EVENTS).set(static_cast<int>(num_threads));
 
     CALI_MARK_END("Initialization");
-    
+
     //
     // --- Thread processing function
     //
@@ -372,16 +369,16 @@ int main(int argc, const char* argv[])
     CaliperMetadataDB     metadb;
     std::atomic<unsigned> index(0);
     std::mutex            msgmutex;
-    
+
     auto thread_fn = [&](unsigned t) {
         Annotation::Guard
-            g_t(Annotation("thread").set(static_cast<int>(t)));
-        
+            g_t(Annotation("thread", CALI_ATTR_SCOPE_THREAD).set(static_cast<int>(t)));
+
         for (unsigned i = index++; i < files.size(); i = index++) { // "index++" is atomic read-mod-write
             const char* filename = (files[i].empty() ? "stdin" : files[i].c_str());
-            
-            Annotation::Guard 
-                g_s(Annotation("cali-query.stream").begin(filename));
+
+            Annotation::Guard
+                g_s(Annotation("cali-query.stream", CALI_ATTR_SCOPE_THREAD).begin(filename));
 
             if (verbose) {
                 std::lock_guard<std::mutex>
@@ -389,16 +386,13 @@ int main(int argc, const char* argv[])
 
                 std::cerr << "cali-query: Reading " << filename << std::endl;
             }
-           
-            CsvReader reader(files[i]);
-            IdMap     idmap;
 
-            if (!reader.read([&](const RecordMap& rec){
-                        metadb.merge(rec, idmap, node_proc, snap_proc);
-                    })) {
+            CaliReader reader(files[i]);
+
+            if (!reader.read(metadb, node_proc, snap_proc)) {
                 std::lock_guard<std::mutex>
                     g(msgmutex);
-                
+
                 std::cerr << "cali-query: Error: Could not read file " << filename << std::endl;
             }
         }
@@ -417,13 +411,13 @@ int main(int argc, const char* argv[])
         t.join();
 
     CALI_MARK_END("Processing");
-    
+
     //
     // --- Flush outputs
     //
 
     CALI_MARK_BEGIN("Writing");
-    
+
     if (args.is_set("list-globals")) {
         if (spec.attribute_selection.selection != QuerySpec::AttributeSelection::List) {
             //   Global attributes will not be printed by default.
@@ -432,7 +426,7 @@ int main(int argc, const char* argv[])
 
             spec.attribute_selection.selection = QuerySpec::AttributeSelection::List;
 
-            for (const Attribute& attr : metadb.get_attributes())
+            for (const Attribute& attr : metadb.get_all_attributes())
                 if (attr.is_global())
                     spec.attribute_selection.list.push_back(attr.name());
 
@@ -447,4 +441,6 @@ int main(int argc, const char* argv[])
     }
 
     CALI_MARK_END("Writing");
+
+    mgr.flush();
 }

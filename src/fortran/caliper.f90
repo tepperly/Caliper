@@ -5,27 +5,29 @@ module Caliper
   integer(kind=C_INT64_T), parameter :: CALI_INV_ID = -1
   
   ! cali_attr_type
-  integer(kind=C_INT), parameter ::  &
-       CALI_TYPE_INV           =  0, &
-       CALI_TYPE_USR           =  1, &
-       CALI_TYPE_INT           =  2, &
-       CALI_TYPE_UINT          =  3, &
-       CALI_TYPE_STRING        =  4, &
-       CALI_TYPE_ADDR          =  5, &
-       CALI_TYPE_DOUBLE        =  6, &
-       CALI_TYPE_BOOL          =  7, &
+  integer(kind=C_INT), parameter ::   &
+       CALI_TYPE_INV           =  0,  &
+       CALI_TYPE_USR           =  1,  &
+       CALI_TYPE_INT           =  2,  &
+       CALI_TYPE_UINT          =  3,  &
+       CALI_TYPE_STRING        =  4,  &
+       CALI_TYPE_ADDR          =  5,  &
+       CALI_TYPE_DOUBLE        =  6,  &
+       CALI_TYPE_BOOL          =  7,  &
        CALI_TYPE_TYPE          =  8
 
   ! cali_attr_properties
-  integer(kind=C_INT), parameter ::  &
-       CALI_ATTR_DEFAULT       =  0, &
-       CALI_ATTR_ASVALUE       =  1, &
-       CALI_ATTR_NOMERGE       =  2, &
-       CALI_ATTR_SCOPE_PROCESS = 12, &
-       CALI_ATTR_SCOPE_THREAD  = 20, &
-       CALI_ATTR_SCOPE_TASK    = 24, &
-       CALI_ATTR_SKIP_EVENTS   = 64, &
-       CALI_ATTR_HIDDEN        = 128
+  integer(kind=C_INT), parameter ::   &
+       CALI_ATTR_DEFAULT       =  0,  &
+       CALI_ATTR_ASVALUE       =  1,  &
+       CALI_ATTR_NOMERGE       =  2,  &
+       CALI_ATTR_SCOPE_PROCESS = 12,  &
+       CALI_ATTR_SCOPE_THREAD  = 20,  &
+       CALI_ATTR_SCOPE_TASK    = 24,  &
+       CALI_ATTR_SKIP_EVENTS   = 64,  &
+       CALI_ATTR_HIDDEN        = 128, &
+       CALI_ATTR_NESTED        = 256, &
+       CALI_ATTR_GLOBAL        = 512
   
   ! cali_err
   integer(kind=C_INT), parameter ::  &
@@ -518,5 +520,21 @@ contains
        err = err_
     end if
   end subroutine cali_end_byname
+
+  ! cali_mpi_init
+  subroutine cali_mpi_init()
+   use, intrinsic :: iso_c_binding, only : C_NULL_CHAR, C_INT64_T
+   implicit none
+
+   ! void cali_mpi_init()
+   interface
+      subroutine cali_mpi_init_c () &
+           bind(C, name='cali_mpi_init')
+        use, intrinsic :: iso_c_binding
+      end subroutine cali_mpi_init_c
+   end interface
+
+   call cali_mpi_init_c()
+ end subroutine cali_mpi_init
 
 end module Caliper

@@ -1,10 +1,12 @@
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
+
 /// \file  CompressedSnapshotRecord.h
 /// \brief CompressedSnapshotRecord class
 
 #pragma once
 
 #include "caliper/common/Entry.h"
-#include "caliper/common/Record.h"
 #include "caliper/common/Variant.h"
 
 #include <vector>

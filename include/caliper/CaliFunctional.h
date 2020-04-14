@@ -1,40 +1,20 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 /// \file CaliFunctional.h
 /// Caliper C++ Functional Annotation Utilities
 
 #ifndef CALI_FUNCTIONAL_H
 #define CALI_FUNCTIONAL_H
+
+
+#define GCC_VERSION (__GNUC__ * 10000 \
+                     + __GNUC_MINOR__ * 100 \
+                     + __GNUC_PATCHLEVEL__)
+/* Test for GCC > 3.2.0 */
+
+
+#define VARIADIC_RETURN_SAFE
 
 #include "Annotation.h"
 #include "cali_definitions.h"
@@ -260,6 +240,91 @@ WrappedFunction<LB> wrap_function(const char* name, LB body){
 template<typename LB>
 ArgWrappedFunction<LB> wrap_function_and_args(const char* name, LB body){
     return ArgWrappedFunction<LB>(name,body);
+}
+
+template<typename InstanceType>
+struct Recordable{
+    static void record(InstanceType instance){};
+};
+
+template<typename... Args>
+struct MapRecordingOperator{
+    static auto record() -> void {
+    }
+};
+template<typename MaybeRecordable>
+void recordIfPossible(const MaybeRecordable instance){
+    Recordable<MaybeRecordable>::record(instance);
+}
+template<typename MaybeRecordable>
+void recordIfPossible(const MaybeRecordable* instance){
+    Recordable<MaybeRecordable>::record(*instance);
+}
+cali::Annotation argument_number_annot("argument");
+template <typename Arg, typename... Args>
+struct MapRecordingOperator<Arg, Args...>{
+    static auto record(Arg arg, Args... args) -> void {
+        argument_number_annot.set(static_cast<int>(sizeof...(args)));
+        recordIfPossible(arg);
+        argument_number_annot.end(); // can be moved to callsite for speed, looks bad though
+        MapRecordingOperator<Args...>::record(args...);
+    }
+};
+
+
+
+template<typename... Args>
+void recordAll(Args... args){
+  MapRecordingOperator<Args...>::record(args...);
+}
+
+cali::Annotation recording_phase("recording_phase");
+template<class LB>
+struct RecordedFunction {
+    RecordedFunction(const char* func_name, LB func) : body(func){
+        name = func_name;
+    }
+    template <typename... Args>
+    auto operator()(Args... args) -> typename std::enable_if<
+        !std::is_same<typename std::result_of<LB(Args...)>::type, void>::value,
+        typename std::result_of<LB(Args...)>::type>::type {
+      recording_phase.begin("pre"); 
+      recordAll(args...);
+      recording_phase.end();
+      cali::Annotation::Guard func_annot(
+          cali::Annotation("debugged_function").begin(name)
+      );
+      auto return_value = body(args...);
+      //cali::Annotation return_value_annot("return");
+      //return_value_annot.set(return_value);
+      //return_value_annot.end();
+      recording_phase.begin("post");
+      recordAll(args...);
+      recording_phase.end();
+      return return_value;
+    }
+    template <typename... Args>
+    auto operator()(Args... args) -> typename std::enable_if<
+        std::is_same<typename std::result_of<LB(Args...)>::type, void>::value,
+        typename std::result_of<LB(Args...)>::type>::type {
+      cali::Annotation::Guard func_annot(
+          cali::Annotation("debugged_function").begin(name)
+      );
+      recording_phase.begin("pre"); 
+      recordAll(args...);
+      recording_phase.end();
+      body(args...);
+      recording_phase.begin("post"); 
+      recordAll(args...);
+      recording_phase.end(); 
+    }
+    LB body;
+    const char* name;
+};
+
+template<typename LB>
+RecordedFunction<LB> make_recorded_function(const char* name, LB body){
+    return RecordedFunction<LB>(name,body);
 }
 
 } // end namespace cali

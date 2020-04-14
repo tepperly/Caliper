@@ -1,36 +1,7 @@
-// Copyright (c) 2017, Lawrence Livermore National Security, LLC.
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
-// Pretty-print tree-organized snapshots 
+// Pretty-print tree-organized snapshots
 
 #include "caliper/reader/TreeFormatter.h"
 
@@ -40,9 +11,13 @@
 #include "caliper/common/CaliperMetadataAccessInterface.h"
 
 #include "caliper/common/Attribute.h"
+#include "caliper/common/Log.h"
 #include "caliper/common/Node.h"
+#include "caliper/common/StringConverter.h"
 
 #include "caliper/common/util/split.hpp"
+
+#include "../common/util/format_util.h"
 
 #include <algorithm>
 #include <cassert>
@@ -52,37 +27,26 @@
 
 using namespace cali;
 
-namespace
-{
-
-const char whitespace[120+1] =
-    "                                        "
-    "                                        "
-    "                                        ";
-
-inline std::ostream& pad_right(std::ostream& os, const std::string& str, std::size_t width)
-{
-    os << str << whitespace+(120-std::min<std::size_t>(120, 1+width-str.size()));
-    return os;
-}
-
-inline std::ostream& pad_left (std::ostream& os, const std::string& str, std::size_t width)
-{
-    os << whitespace+(120 - std::min<std::size_t>(120, width-str.size())) << str << ' ';
-    return os;
-}
-
-} // namespace [anonymous]
-
 
 struct TreeFormatter::TreeFormatterImpl
 {
     SnapshotTree             m_tree;
 
     QuerySpec::AttributeSelection m_attribute_columns;
-    std::map<Attribute, int> m_attribute_column_widths;
+
+    struct ColumnInfo {
+        std::string display_name;
+        int width;
+    };
+
+    std::map<Attribute, ColumnInfo> m_column_info;
 
     int                      m_path_column_width;
+    int                      m_max_column_width;
+
+    std::map<std::string, std::string> m_aliases;
+
+    bool                     m_use_nested;
 
     std::vector<std::string> m_path_key_names;
     std::vector<Attribute>   m_path_keys;
@@ -90,16 +54,47 @@ struct TreeFormatter::TreeFormatterImpl
     std::mutex               m_path_key_lock;
 
 
+    int column_width(int base) const {
+        return std::max(m_max_column_width > 0 ? std::min(base, m_max_column_width) : base, 4);
+    }
+
     void configure(const QuerySpec& spec) {
         // set path keys (first argument in spec.format.args)
         if (spec.format.args.size() > 0)
             util::split(spec.format.args.front(), ',',
                         std::back_inserter(m_path_key_names));
 
+        // set max column width
+        if (spec.format.args.size() > 1) {
+            bool ok = false;
+
+            m_max_column_width = StringConverter(spec.format.args[1]).to_int(&ok);
+
+            if (!ok) {
+                Log(0).stream() << "TreeFormatter: invalid column width argument \""
+                                << spec.format.args[1] << "\""
+                                << std::endl;
+
+                m_max_column_width = -1;
+            }
+        }
+
+        {
+            auto it = std::find(m_path_key_names.begin(), m_path_key_names.end(),
+                                "prop:nested");
+
+            if (it != m_path_key_names.end()) {
+                m_use_nested = true;
+                m_path_key_names.erase(it);
+            } else if (!m_path_key_names.empty())
+                m_use_nested = false;
+        }
+
         m_path_keys.assign(m_path_key_names.size(), Attribute::invalid);
         m_attribute_columns = spec.attribute_selection;
+        m_aliases = spec.aliases;
     }
-    
+
     std::vector<Attribute> get_path_keys(const CaliperMetadataAccessInterface& db) {
         std::vector<Attribute> path_keys;
 
@@ -110,7 +105,7 @@ struct TreeFormatter::TreeFormatterImpl
             path_keys = m_path_keys;
         }
 
-        for (std::vector<Attribute>::size_type i = 0; i < path_keys.size(); ++i) 
+        for (std::vector<Attribute>::size_type i = 0; i < path_keys.size(); ++i)
             if (path_keys[i] == Attribute::invalid) {
                 Attribute attr = db.get_attribute(m_path_key_names[i]);
 
@@ -119,7 +114,7 @@ struct TreeFormatter::TreeFormatterImpl
                     std::lock_guard<std::mutex>
                         g(m_path_key_lock);
                     m_path_keys[i] = attr;
-                } 
+                }
             }
 
         return path_keys;
@@ -128,19 +123,19 @@ struct TreeFormatter::TreeFormatterImpl
     void add(const CaliperMetadataAccessInterface& db, const EntryList& list) {
         const SnapshotTreeNode* node = nullptr;
 
-        if (m_path_key_names.empty()) {
+        if (m_use_nested) {
             node = m_tree.add_snapshot(db, list, [](const Attribute& attr,const Variant&){
                     return attr.is_nested();
                 });
-        } else { 
+        } else {
             auto path_keys = get_path_keys(db);
 
             node = m_tree.add_snapshot(db, list, [&path_keys](const Attribute& attr, const Variant&){
-                    return (std::find(std::begin(path_keys), std::end(path_keys), 
+                    return (std::find(std::begin(path_keys), std::end(path_keys),
                                       attr) != std::end(path_keys));
                 });
         }
-        
+
         if (!node)
             return;
 
@@ -157,37 +152,55 @@ struct TreeFormatter::TreeFormatterImpl
 
         for (auto &p : node->attributes()) {
             int len = p.second.to_string().size();
-            auto it = m_attribute_column_widths.find(p.first);
+            auto it = m_column_info.find(p.first);
 
-            if (it == m_attribute_column_widths.end())
-                m_attribute_column_widths.insert(std::make_pair(p.first, std::max<int>(len, p.first.name().size())));
-            else
-                it->second = std::max(it->second, len);
+            if (it == m_column_info.end()) {
+                std::string name = p.first.name();
+
+                auto ait = m_aliases.find(name);
+                if (ait != m_aliases.end())
+                    name = ait->second;
+
+                ColumnInfo ci { name, std::max<int>(len, name.size()) };
+
+                m_column_info.insert(std::make_pair(p.first, ci));
+            } else
+                it->second.width = std::max(it->second.width, len);
         }
     }
 
-    void recursive_print_nodes(const SnapshotTreeNode* node, 
-                               int level, 
-                               const std::vector<Attribute>& attributes, 
+    void recursive_print_nodes(const SnapshotTreeNode* node,
+                               int level,
+                               const std::vector<Attribute>& attributes,
                                std::ostream& os)
     {
-        // 
+        //
         // print this node
         //
 
-        std::string path_str;
-        path_str.assign(2*level, ' ');
-        path_str.append(node->label_value().to_string());
+        {
+            int width = column_width(m_path_column_width);
 
-        ::pad_right(os, path_str, m_path_column_width);
+            std::string path_str;
+            path_str.append(std::min(2*level, width-2), ' ');
+
+            if (2*level >= width)
+                path_str.append("..");
+            else
+                path_str.append(util::clamp_string(node->label_value().to_string(), width-2*level));
+
+            util::pad_right(os, path_str, width);
+        }
 
         for (const Attribute& a : attributes) {
             std::string str;
 
+            int width = column_width(m_column_info[a].width);
+
             {
                 auto it = node->attributes().find(a);
                 if (it != node->attributes().end())
-                    str = it->second.to_string();
+                    str = util::clamp_string(it->second.to_string(), width);
             }
 
             cali_attr_type t = a.type();
@@ -197,14 +210,14 @@ struct TreeFormatter::TreeFormatterImpl
                                 t == CALI_TYPE_ADDR);
 
             if (align_right)
-                ::pad_left (os, str, m_attribute_column_widths[a]);
+                util::pad_left (os, str, width);
             else
-                ::pad_right(os, str, m_attribute_column_widths[a]);
+                util::pad_right(os, str, width);
         }
 
         os << std::endl;
 
-        // 
+        //
         // recursively descend
         //
 
@@ -213,8 +226,6 @@ struct TreeFormatter::TreeFormatterImpl
     }
 
     void flush(const CaliperMetadataAccessInterface& db, std::ostream& os) {
-        m_path_column_width = std::max<std::size_t>(m_path_column_width, 4 /* strlen("Path") */);
-
         //
         // establish order of attribute columns
         //
@@ -223,18 +234,16 @@ struct TreeFormatter::TreeFormatterImpl
 
         switch (m_attribute_columns.selection) {
         case QuerySpec::AttributeSelection::Default:
-            // auto-attributes: skip hidden and "cali." attributes
-            for (auto &p : m_attribute_column_widths) {
-                if (p.first.is_hidden())
-                    continue;
-                if (p.first.name().compare(0, 5, "cali.") == 0)
+            // auto-attributes: skip hidden and global attributes
+            for (auto &p : m_column_info) {
+                if (p.first.is_hidden() || p.first.is_global())
                     continue;
 
                 attributes.push_back(p.first);
             }
             break;
         case QuerySpec::AttributeSelection::All:
-            for (auto &p : m_attribute_column_widths)
+            for (auto &p : m_column_info)
                 attributes.push_back(p.first);
             break;
         case QuerySpec::AttributeSelection::List:
@@ -257,10 +266,15 @@ struct TreeFormatter::TreeFormatterImpl
         // print header
         //
 
-        ::pad_right(os, "Path", m_path_column_width);
+        {
+            int width = column_width(m_path_column_width);
+            util::pad_right(os, util::clamp_string("Path", width), width);
+        }
 
-        for (const Attribute& a : attributes)
-            ::pad_right(os, a.name(), m_attribute_column_widths[a]);
+        for (const Attribute& a : attributes) {
+            int width = column_width(m_column_info[a].width);
+            util::pad_right(os, util::clamp_string(m_column_info[a].display_name, width), width);
+        }
 
         os << std::endl;
 
@@ -276,7 +290,9 @@ struct TreeFormatter::TreeFormatterImpl
     }
 
     TreeFormatterImpl()
-        : m_path_column_width(0)
+        : m_path_column_width(0),
+          m_max_column_width(48),
+          m_use_nested(true)
     { }
 };
 

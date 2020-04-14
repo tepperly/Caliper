@@ -1,4 +1,4 @@
-# Basic smoke tests: create and read a simple trace 
+# Basic smoke tests: create and read a simple trace, test various options
 
 import json
 import unittest
@@ -30,6 +30,116 @@ class CaliperBasicTraceTest(unittest.TestCase):
         self.assertTrue(cat.has_snapshot_with_attributes(
             snapshots, {'event.end#iteration': '3', 'iteration': '3', 'phase': 'loop'}))
 
+    def test_ann_metadata(self):
+        target_cmd = [ './ci_test_basic' ]
+        query_cmd  = [ '../../src/tools/cali-query/cali-query', '--list-attributes', '-e', '--print-attributes', 'cali.attribute.name,meta.int,cali.attribute.prop' ]
+
+        caliper_config = {
+            'CALI_CONFIG_PROFILE'    : 'serial-trace',
+            'CALI_RECORDER_FILENAME' : 'stdout',
+            'CALI_LOG_VERBOSITY'     : '0'
+        }
+
+        query_output = cat.run_test_with_query(target_cmd, query_cmd, caliper_config)
+        snapshots = cat.get_snapshots_from_text(query_output)
+
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'phase',
+                         'meta.int':            '42',
+                         'cali.attribute.prop': '20' # default property: CALI_ATTR_SCOPE_THREAD
+            }))
+
+    def test_default_scope_switch(self):
+        target_cmd = [ './ci_test_basic' ]
+        query_cmd  = [ '../../src/tools/cali-query/cali-query', '--list-attributes', '-e', '--print-attributes', 'cali.attribute.name,meta.int,cali.attribute.prop' ]
+
+        caliper_config = {
+            'CALI_CONFIG_PROFILE'    : 'serial-trace',
+            'CALI_CALIPER_ATTRIBUTE_DEFAULT_SCOPE' : 'process',
+            'CALI_RECORDER_FILENAME' : 'stdout',
+            'CALI_LOG_VERBOSITY'     : '0'
+        }
+
+        query_output = cat.run_test_with_query(target_cmd, query_cmd, caliper_config)
+        snapshots = cat.get_snapshots_from_text(query_output)
+
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'phase',
+                         'meta.int':            '42',
+                         'cali.attribute.prop': '12' # CALI_ATTR_SCOPE_PROCESS
+            }))
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'iteration',
+                         'cali.attribute.prop': '13' # CALI_ATTR_SCOPE_PROCESS | CALI_ATTR_ASVALUE
+            }))
+
+    def test_sec_unit_selection(self):
+        target_cmd = [ './ci_test_basic' ]
+        query_cmd  = [ '../../src/tools/cali-query/cali-query', '--list-attributes', '-e', '--print-attributes', 'cali.attribute.name,time.unit' ]
+
+        caliper_config = {
+            'CALI_CONFIG_PROFILE'    : 'serial-trace',
+            'CALI_TIMER_SNAPSHOT_DURATION' : 'true',
+            'CALI_TIMER_UNIT'        : 'sec',
+            'CALI_RECORDER_FILENAME' : 'stdout',
+            'CALI_LOG_VERBOSITY'     : '0',
+        }
+
+        query_output = cat.run_test_with_query(target_cmd, query_cmd, caliper_config)
+        snapshots = cat.get_snapshots_from_text(query_output)
+
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'time.duration',
+                         'time.unit':           'sec'
+            }))
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'time.inclusive.duration',
+                         'time.unit':           'sec'
+            }))
+
+    def test_usec_unit_selection(self):
+        target_cmd = [ './ci_test_basic' ]
+        query_cmd  = [ '../../src/tools/cali-query/cali-query', '--list-attributes', '-e', '--print-attributes', 'cali.attribute.name,time.unit' ]
+
+        caliper_config = {
+            'CALI_CONFIG_PROFILE'    : 'serial-trace',
+            'CALI_TIMER_SNAPSHOT_DURATION' : 'true',
+            'CALI_TIMER_UNIT'        : 'usec',
+            'CALI_RECORDER_FILENAME' : 'stdout',
+            'CALI_LOG_VERBOSITY'     : '0',
+        }
+
+        query_output = cat.run_test_with_query(target_cmd, query_cmd, caliper_config)
+        snapshots = cat.get_snapshots_from_text(query_output)
+
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'time.duration',
+                         'time.unit':           'usec'
+            }))
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'cali.attribute.name': 'time.inclusive.duration',
+                         'time.unit':           'usec'
+            }))
+
+    def test_largetrace(self):
+        target_cmd = [ './ci_test_macros', '0', 'none', '400' ]
+        query_cmd  = [ '../../src/tools/cali-query/cali-query', '-e' ]
+
+        caliper_config = {
+            'CALI_SERVICES_ENABLE'   : 'event,trace,report',
+            # 'CALI_EVENT_ENABLE_SNAPSHOT_INFO' : 'false',
+            'CALI_REPORT_FILENAME'   : 'stdout',
+            'CALI_REPORT_CONFIG'     : 'select function,event.end#loop,count() group by function,event.end#loop format cali',
+            'CALI_TRACE_BUFFER_SIZE' : '1',
+            'CALI_LOG_VERBOSITY'     : '0'
+        }
+
+        query_output = cat.run_test_with_query(target_cmd, query_cmd, caliper_config)
+        snapshots = cat.get_snapshots_from_text(query_output)
+
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, { 'function' : 'main/foo', 'event.end#loop': 'fooloop', 'count' : '400' }))
+
     def test_globals(self):
         target_cmd = [ './ci_test_basic' ]
         query_cmd  = [ '../../src/tools/cali-query/cali-query', '-e', '--list-globals' ]
@@ -47,10 +157,10 @@ class CaliperBasicTraceTest(unittest.TestCase):
 
         self.assertTrue(cat.has_snapshot_with_keys(
             snapshots, { 'cali.caliper.version' } ) )
-        
+
     def test_esc(self):
-        target_cmd = [ './ci_test_esc' ]
-        query_cmd  = [ '../../src/tools/cali-query/cali-query', '-j' ]
+        target_cmd = [ './ci_test_basic' ]
+        query_cmd  = [ '../../src/tools/cali-query/cali-query', '-j', '-s', 'cali.event.set' ]
 
         caliper_config = {
             'CALI_CONFIG_PROFILE'    : 'serial-trace',
@@ -61,15 +171,13 @@ class CaliperBasicTraceTest(unittest.TestCase):
         obj = json.loads( cat.run_test_with_query(target_cmd, query_cmd, caliper_config) )
 
         self.assertEqual(obj[0]['event.set# =\\weird ""attribute"=  '], '  \\\\ weird," name",' )
-        
 
     def test_macros(self):
-        target_cmd = [ './ci_test_macros' ]
+        # Use ConfigManager API here
+        target_cmd = [ './ci_test_macros', '0', 'event-trace,output=stdout' ]
         query_cmd  = [ '../../src/tools/cali-query/cali-query', '-e' ]
 
         caliper_config = {
-            'CALI_CONFIG_PROFILE'    : 'serial-trace',
-            'CALI_RECORDER_FILENAME' : 'stdout',
             'CALI_LOG_VERBOSITY'     : '0'
         }
 
@@ -90,10 +198,14 @@ class CaliperBasicTraceTest(unittest.TestCase):
                 'statement'  : 'foo.init' }))
         self.assertTrue(cat.has_snapshot_with_attributes(
             snapshots, {
+                'function'   : 'main',
+                'annotation' : 'before_loop' }))
+        self.assertTrue(cat.has_snapshot_with_attributes(
+            snapshots, {
                 'function'   : 'main/foo',
                 'loop'       : 'mainloop/fooloop',
                 'iteration#fooloop' : '3' }))
-        
+
     def test_property_override(self):
         target_cmd = [ './ci_test_macros' ]
         query_cmd  = [ '../../src/tools/cali-query/cali-query', '-e', '--list-attributes' ]
@@ -154,7 +266,6 @@ class CaliperBasicTraceTest(unittest.TestCase):
 
         self.assertTrue(cat.has_snapshot_with_attributes(
             snapshots, { 'testbinding' : 'binding.nested=outer/binding.nested=inner' }))
-
 
 if __name__ == "__main__":
     unittest.main()

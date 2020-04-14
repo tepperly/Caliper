@@ -1,57 +1,27 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 /// \file Annotation.h
-/// Caliper C++ annotation interface
-
-//
-// --- NOTE: This interface must be C++98 only!
-//
+/// %Caliper C++ annotation interface
 
 #ifndef CALI_ANNOTATION_H
 #define CALI_ANNOTATION_H
 
-#include "common/cali_types.h"
+#include "caliper/common/Variant.h"
+
+#include <map>
+
+#if __cplusplus >= 201103L
+#define CALI_FORWARDING_ENABLED
+#endif
 
 namespace cali
 {
-    
-class Variant;
 
 /// \addtogroup AnnotationAPI
 /// \{
-    
+
 /// \brief Pre-defined function annotation class
-    
 class Function
 {
 private:
@@ -59,20 +29,32 @@ private:
     // Do not copy Function objects: will double-end things
     Function(const Function&);
     Function& operator = (const Function&);
-    
+
 public:
 
     Function(const char* name);
-
     ~Function();
 };
 
+/// \brief Pre-defined region annotation class.
+///   Region begins and ends with object construction and destruction.
+class ScopeAnnotation
+{
+public:
+
+    explicit ScopeAnnotation(const char* name);
+
+    ScopeAnnotation(const ScopeAnnotation&) = delete;
+    ScopeAnnotation& operator = (const ScopeAnnotation&) = delete;
+
+    ~ScopeAnnotation();
+};
+
 /// \brief Pre-defined loop annotation class, with optional iteration attribute
-    
 class Loop
 {
     struct Impl;
-    Impl* pI;    
+    Impl* pI;
 
 public:
 
@@ -80,25 +62,27 @@ public:
         const Impl* pI;
 
     public:
-        
+
         Iteration(const Impl*, int);
         ~Iteration();
     };
 
     Loop(const char* name);
+    Loop(const Loop& loop);
+
     ~Loop();
 
-    Iteration iteration(int i);
-    
+    Iteration iteration(int i) const;
+
     void end();
 };
 
-    
+
 /// \brief Instrumentation interface to add and manipulate context attributes
 ///
 /// The Annotation class is the primary source-code instrumentation interface
-/// for %Caliper. %Annotation objects provide access to named %Caliper context 
-/// attributes. If the referenced attribute does not exist yet, it will be 
+/// for %Caliper. %Annotation objects provide access to named %Caliper context
+/// attributes. If the referenced attribute does not exist yet, it will be
 /// created automatically.
 ///
 /// Example:
@@ -109,15 +93,15 @@ public:
 ///   // ...
 /// phase_ann.end();
 /// \endcode
-/// This example creates an annotation object for the \c myprogram.phase 
-/// attribute, and uses the \c begin()/end() methods to mark a section 
+/// This example creates an annotation object for the \c myprogram.phase
+/// attribute, and uses the \c begin()/end() methods to mark a section
 /// of code where that attribute is set to "Initialization".
 ///
 /// \note Access to the underlying named context attribute through
 /// %Annotation objects is not exclusive: multiple %Annotation objects
 /// can reference and update the same context attribute.
 
-class Annotation 
+class Annotation
 {
     struct Impl;
     Impl*  pI;
@@ -125,13 +109,23 @@ class Annotation
 
 public:
 
-    /// \brief Creates an annotation object to manipulate 
-    ///   the context attribute with the given \a name. 
-    /// 
+    /// \brief Creates an annotation object to manipulate
+    ///   the context attribute with the given \a name.
+    ///
     /// \param name The attribute name
-    /// \param opt  %Attribute flags. Bitwise OR combination 
+    /// \param opt  %Attribute flags. Bitwise OR combination
     ///   of \ref cali_attr_properties values.
     Annotation(const char* name, int opt = 0);
+
+    typedef std::map<const char*, Variant> MetadataListType ;
+    /// \brief Creates an annotation object to manipulate
+    ///   the context attribute with the given \a name.
+    ///
+    /// \param name The attribute name
+    /// \param opt  %Attribute flags. Bitwise OR combination
+    ///   of \ref cali_attr_properties values.
+    /// \param metadata: a map of
+    Annotation(const char* name, const MetadataListType& metadata, int opt=0);
 
     Annotation(const Annotation&);
 
@@ -139,7 +133,7 @@ public:
 
     Annotation& operator = (const Annotation&);
 
-    
+
     /// \brief Scope guard to automatically close an annotation at the end of
     ///   the C++ scope.
     ///
@@ -147,8 +141,8 @@ public:
     /// \code
     ///   int var = 42;
     ///   while (condition) {
-    ///     cali::Annotation::Guard 
-    ///       g( cali::Annotation("myvar").set(var) ); 
+    ///     cali::Annotation::Guard
+    ///       g( cali::Annotation("myvar").set(var) );
     ///     // Sets "myvar=<var>" and automatically closes it at the end of the loop
     ///   }
     /// \endcode
@@ -174,7 +168,7 @@ public:
 
     Annotation& begin();
 
-    /// \brief Begin <em>name</em>=<em>data</em> region for the associated 
+    /// \brief Begin <em>name</em>=<em>data</em> region for the associated
     ///    context attribute.
     ///
     /// Marks begin of the <em>name</em>=<em>data</em> region, where
@@ -190,11 +184,44 @@ public:
     /// \copydoc cali::Annotation::begin(int)
     Annotation& begin(const Variant& data);
 
+#ifdef CALI_FORWARDING_ENABLED
+    template<typename Arg, typename... Args>
+    struct head{
+        using type = Arg;
+    };
+
+    template<typename... Args>
+    auto begin(Args&&... args) -> typename std::enable_if<!std::is_same<typename head<Args...>::type,cali::Variant>::value,Annotation&>::type {
+        return begin(Variant(std::forward<Args>(args)...));
+    }
+    template<typename... Args>
+    auto set(Args&&... args) -> typename std::enable_if<!std::is_same<typename head<Args...>::type,cali::Variant>::value,Annotation&>::type {
+        return set(Variant(std::forward<Args>(args)...));
+    }
+#else
+    template<typename Arg>
+    Annotation& begin(const Arg& arg){
+        return begin(Variant(arg));
+    }
+    template<typename Arg>
+    Annotation& set(const Arg& arg){
+        return set(Variant(arg));
+    }
+    template<typename Arg>
+    Annotation& begin(Arg& arg){
+        return begin(Variant(arg));
+    }
+    template<typename Arg>
+    Annotation& set(Arg& arg){
+        return set(Variant(arg));
+    }
+#endif
+
     /// \}
     /// \name set() overloads
     /// \{
 
-    /// \brief Set <em>name</em>=<em>data</em> for the associated 
+    /// \brief Set <em>name</em>=<em>data</em> for the associated
     ///    context attribute.
     ///
     /// Exports <em>name</em>=<em>data</em>, where \a name is the
@@ -212,13 +239,16 @@ public:
 
     /// \}
 
-    /// \brief Close top-most open region for the associated 
+    /// \brief Close top-most open region for the associated
     ///   context attribute.
     void end();
 };
 
 /// \} // AnnotationAPI group
-    
+
 } // namespace cali
+
+#undef CALI_FORWARDING_ENABLED
+
 
 #endif

@@ -1,36 +1,6 @@
-/* *********************************************************************************************
- * Copyright (c) 2017, Lawrence Livermore National Security, LLC.  
- * Produced at the Lawrence Livermore National Laboratory.
- *
- * This file is part of Caliper.
- * Written by David Boehme, boehme3@llnl.gov.
- * LLNL-CODE-678900
- * All rights reserved.
- *
- * For details, see https://github.com/scalability-llnl/Caliper.
- * Please also see the LICENSE file for our additional BSD notice.
- *
- * Redistribution and use in source and binary forms, with or without modification, are
- * permitted provided that the following conditions are met:
- *
- *  * Redistributions of source code must retain the above copyright notice, this list of
- *    conditions and the disclaimer below.
- *  * Redistributions in binary form must reproduce the above copyright notice, this list of
- *    conditions and the disclaimer (as noted below) in the documentation and/or other materials
- *    provided with the distribution.
- *  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
- *    or promote products derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
- * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
- * LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- * *********************************************************************************************/
+/* Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+ * See top-level LICENSE file for details.
+ */ 
 
 /** \file  cali_variant.c
  *  \brief cali_variant_t definition
@@ -81,6 +51,8 @@ cali_variant_get_size(cali_variant_t v)
         return sizeof(bool);
     case CALI_TYPE_TYPE:
         return sizeof(cali_attr_type);
+    case CALI_TYPE_PTR:
+        return sizeof(void*);
     }
 
     return 0;
@@ -91,13 +63,13 @@ cali_variant_get_data(const cali_variant_t* v)
 {
     uint64_t          t = _EXTRACT_TYPE(v->type_and_size);
     cali_attr_type type = (t <= CALI_MAXTYPE ? (cali_attr_type) t : CALI_TYPE_INV);
-    
+
     switch (type) {
     case CALI_TYPE_INV:
         return 0;
     case CALI_TYPE_USR:
     case CALI_TYPE_STRING:
-        return v->value.unmanaged_ptr;
+        return v->value.unmanaged_const_ptr;
     case CALI_TYPE_INT:
         return &v->value.v_int;
     case CALI_TYPE_ADDR:
@@ -109,11 +81,12 @@ cali_variant_get_data(const cali_variant_t* v)
         return &v->value.v_bool;
     case CALI_TYPE_TYPE:
         return &v->value.v_type;
+    case CALI_TYPE_PTR:
+        return v->value.unmanaged_ptr;
     }
 
     return NULL;
 }
-
 
 cali_variant_t
 cali_make_variant(cali_attr_type type, const void* ptr, size_t size)
@@ -121,14 +94,14 @@ cali_make_variant(cali_attr_type type, const void* ptr, size_t size)
     cali_variant_t v = { 0, { .v_uint = 0 } };
 
     v.type_and_size = (type & CALI_VARIANT_TYPE_MASK);
-    
+
     switch (type) {
     case CALI_TYPE_INV:
         break;
     case CALI_TYPE_USR:
     case CALI_TYPE_STRING:
         v.type_and_size  = (size << 8) | (type & CALI_VARIANT_TYPE_MASK);
-        v.value.unmanaged_ptr = ptr;
+        v.value.unmanaged_const_ptr = ptr;
         break;
     case CALI_TYPE_INT:
         v.value.v_int    = *((const int*) ptr);
@@ -146,11 +119,14 @@ cali_make_variant(cali_attr_type type, const void* ptr, size_t size)
     case CALI_TYPE_TYPE:
         v.value.v_type   = *((const cali_attr_type*) ptr);
         break;
+    case CALI_TYPE_PTR:
+        v.value.unmanaged_const_ptr = ptr;
+        break;
     }
 
     return v;
 }
-                  
+
 extern inline cali_variant_t
 cali_make_variant_from_bool(bool value);
 
@@ -164,19 +140,27 @@ extern inline cali_variant_t
 cali_make_variant_from_double(double value);
 
 extern inline cali_variant_t
+cali_make_variant_from_string(const char* str);
+
+extern inline cali_variant_t
 cali_make_variant_from_type(cali_attr_type value);
 
+extern inline cali_variant_t
+cali_make_variant_from_ptr(void* ptr);
+
+extern inline void*
+cali_variant_get_ptr(cali_variant_t v);
 
 /** \brief Return the variant's value as integer
  *
  *  This function returns the variant's value as integer.
  *  Numeric types (bool, int, uint, double, type) will be converted to int,
  *  and value pointed to by \a okptr is set to `true`.
- *  For other types (blobs and strings) the function returns zero, and the 
+ *  For other types (blobs and strings) the function returns zero, and the
  *  value pointed to by \a okptr is set to `false`.
- *  
+ *
  *  \param v     The input variant
- *  \param okptr If non-NULL, indicate success or failure int the referenced variable.   
+ *  \param okptr If non-NULL, indicate success or failure int the referenced variable.
  *  \return The integer value. Zero if the conversion was unsuccesful.
  */
 int
@@ -192,6 +176,7 @@ cali_variant_to_int(cali_variant_t v, bool* okptr)
     case CALI_TYPE_INV:
     case CALI_TYPE_USR:
     case CALI_TYPE_STRING:
+    case CALI_TYPE_PTR:
         ok  = false;
         break;
     case CALI_TYPE_INT:
@@ -223,11 +208,11 @@ cali_variant_to_int(cali_variant_t v, bool* okptr)
  *  This function returns the variant's value as integer.
  *  Numeric types (bool, int, uint, double, type) will be converted to `uint64_t`,
  *  and value pointed to by \a okptr is set to `true`.
- *  For other types (blobs and strings) the function returns zero, and the 
+ *  For other types (blobs and strings) the function returns zero, and the
  *  value pointed to by \a okptr is set to `false`.
- *  
+ *
  *  \param v     The input variant
- *  \param okptr If non-NULL, indicate success or failure int the referenced variable.   
+ *  \param okptr If non-NULL, indicate success or failure int the referenced variable.
  *  \return The integer value. Zero if the conversion was unsuccesful.
  */
 uint64_t
@@ -243,6 +228,7 @@ cali_variant_to_uint(cali_variant_t v, bool* okptr)
     case CALI_TYPE_INV:
     case CALI_TYPE_USR:
     case CALI_TYPE_STRING:
+    case CALI_TYPE_PTR:
         ok  = false;
         break;
     case CALI_TYPE_INT:
@@ -274,11 +260,11 @@ cali_variant_to_uint(cali_variant_t v, bool* okptr)
  *  This function returns the variant's value as double.
  *  Numeric types (bool, int, uint, double, type) will be converted to double,
  *  and value pointed to by \a okptr is set to `true`.
- *  For other types (blobs and strings) the function returns zero, and the 
+ *  For other types (blobs and strings) the function returns zero, and the
  *  value pointed to by \a okptr is set to `false`.
- *  
+ *
  *  \param v     The input variant
- *  \param okptr If non-NULL, indicate success or failure int the referenced variable.   
+ *  \param okptr If non-NULL, indicate success or failure int the referenced variable.
  *  \return The double value. Zero if the conversion was unsuccesful.
  */
 double
@@ -294,6 +280,7 @@ cali_variant_to_double(cali_variant_t v, bool* okptr)
     case CALI_TYPE_INV:
     case CALI_TYPE_USR:
     case CALI_TYPE_STRING:
+    case CALI_TYPE_PTR:
         ok  = false;
         break;
     case CALI_TYPE_INT:
@@ -325,11 +312,11 @@ cali_variant_to_double(cali_variant_t v, bool* okptr)
  *  This function returns the variant's value as type.
  *  For boolean and integer types (int, uint, addr, bool), the returned
  *  value is `false` if the value is equal to 0, and `true` otherwise.
- *  For other types the function returns `false`, and the 
+ *  For other types the function returns `false`, and the
  *  value pointed to by \a okptr is set to `false`.
- *  
+ *
  *  \param v     The input variant
- *  \param okptr If non-NULL, indicate success or failure int the referenced variable.   
+ *  \param okptr If non-NULL, indicate success or failure int the referenced variable.
  *  \return The boolean value; `false` if the conversion was unsuccesful.
  */
 bool
@@ -366,11 +353,11 @@ cali_variant_to_bool(cali_variant_t v, bool* okptr)
  *
  *  This function returns the variant's value as type.
  *  This is only successful for TYPE variants.
- *  For other types the function returns CALI_TYPE_INV, and the 
+ *  For other types the function returns CALI_TYPE_INV, and the
  *  value pointed to by \a okptr is set to `false`.
- *  
+ *
  *  \param v     The input variant
- *  \param okptr If non-NULL, indicate success or failure int the referenced variable.   
+ *  \param okptr If non-NULL, indicate success or failure int the referenced variable.
  *  \return The type value. CALI_TYPE_INV if the conversion was unsuccesful.
  */
 cali_attr_type
@@ -418,7 +405,7 @@ cali_variant_compare(cali_variant_t lhs, cali_variant_t rhs)
             {
                 int lhssize = (int) _EXTRACT_SIZE(lhs.type_and_size);
                 int rhssize = (int) _EXTRACT_SIZE(rhs.type_and_size);
-                int cmp     = memcmp(lhs.value.unmanaged_ptr, rhs.value.unmanaged_ptr,
+                int cmp     = memcmp(lhs.value.unmanaged_const_ptr, rhs.value.unmanaged_const_ptr,
                                      imin(lhssize, rhssize));
 
                 return (cmp ? cmp : (lhssize - rhssize));
@@ -426,8 +413,8 @@ cali_variant_compare(cali_variant_t lhs, cali_variant_t rhs)
         case CALI_TYPE_STRING:
             {
                 int lhssize = (int) _EXTRACT_SIZE(lhs.type_and_size);
-                int rhssize = (int) _EXTRACT_SIZE(rhs.type_and_size);                
-                int cmp     = strncmp(lhs.value.unmanaged_ptr, rhs.value.unmanaged_ptr,
+                int rhssize = (int) _EXTRACT_SIZE(rhs.type_and_size);
+                int cmp     = strncmp(lhs.value.unmanaged_const_ptr, rhs.value.unmanaged_const_ptr,
                                       imin(lhssize, rhssize));
 
                 return (cmp ? cmp : (lhssize - rhssize));
@@ -451,6 +438,8 @@ cali_variant_compare(cali_variant_t lhs, cali_variant_t rhs)
             }
         case CALI_TYPE_TYPE:
             return ((int) lhs.value.v_type) - ((int) rhs.value.v_type);
+        case CALI_TYPE_PTR:
+            return (int) (lhs.value.unmanaged_ptr  - rhs.value.unmanaged_ptr);
         }
     }
 
@@ -461,16 +450,16 @@ bool
 cali_variant_eq(cali_variant_t lhs, cali_variant_t rhs)
 {
     if (lhs.type_and_size != rhs.type_and_size)
-        return false;    
+        return false;
 
     switch ( _EXTRACT_TYPE(lhs.type_and_size) ) {
     case CALI_TYPE_USR:
     case CALI_TYPE_STRING:
         {
-            if (lhs.value.unmanaged_ptr == rhs.value.unmanaged_ptr)
+            if (lhs.value.unmanaged_const_ptr == rhs.value.unmanaged_const_ptr)
                 return true;
             else
-                return 0 == memcmp(lhs.value.unmanaged_ptr, rhs.value.unmanaged_ptr, 
+                return 0 == memcmp(lhs.value.unmanaged_const_ptr, rhs.value.unmanaged_const_ptr,
                                    _EXTRACT_SIZE(lhs.type_and_size));
         }
         break;
@@ -499,7 +488,7 @@ cali_variant_unpack(const unsigned char* buf, size_t* inc, bool *okptr)
     size_t p = 0;
 
     uint64_t ts = vldec_u64(buf, &p);
-    
+
     if (_EXTRACT_TYPE(ts) > CALI_MAXTYPE) {
         if (okptr)
             *okptr = false;
@@ -509,12 +498,11 @@ cali_variant_unpack(const unsigned char* buf, size_t* inc, bool *okptr)
 
     v.type_and_size = ts;
     v.value.v_uint  = vldec_u64(buf+p, &p);
-    
+
     if (inc)
         *inc  += p;
     if (okptr)
-        *okptr = true; 
+        *okptr = true;
 
     return v;
 }
-

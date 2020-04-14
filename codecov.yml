@@ -1,4 +1,7 @@
 coverage:
-  ignore: 
+  ignore:
+    - ext/**
     - test/**
     - **/test/**
+    - **/rapidjson/**
+    - **/CurIOus/**

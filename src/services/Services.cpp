@@ -1,42 +1,11 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-/// @file Services.cpp
-/// Services class implementation
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 #include "caliper/caliper-config.h"
 
 #include "Services.h"
 
+#include "caliper/Caliper.h"
 #include "caliper/CaliperService.h"
 
 #include "caliper/common/Log.h"
@@ -48,7 +17,6 @@
 #include <vector>
 
 using namespace cali;
-using namespace std;
 
 // List of services, defined in services.inc.cpp
 #include "services.inc.cpp"
@@ -56,104 +24,93 @@ using namespace std;
 namespace
 {
 
-struct ServicesList {
-    const CaliperService* services;
-    ServicesList* next;
+class ServicesManager {
+    std::vector<CaliperService> m_services;
+
+public:
+
+    std::vector<std::string> get_available_services() const {
+        std::vector<std::string> ret;
+        ret.reserve(m_services.size());
+
+        for (const CaliperService& s : m_services)
+            ret.push_back(s.name);
+
+        return ret;
+    }
+
+    bool register_service(const char* name, Caliper* c, Channel* channel) const {
+        for (const CaliperService& s : m_services)
+            if (strcmp(s.name, name) == 0 && s.register_fn) {
+                (*s.register_fn)(c, channel);
+                return true;
+            }
+
+        return false;
+    }
+
+    void add_services(const CaliperService services_list[]) {
+        for (const CaliperService* s = services_list; s && s->name && s->register_fn; ++s)
+            if (std::find_if(m_services.begin(), m_services.end(),
+                    [s](const CaliperService& ls){
+                        // string pointer compare is fine here
+                        return s->name == ls.name && s->register_fn == ls.register_fn;
+                    }) == m_services.end())
+                        m_services.push_back(*s);
+    }
+
+    static ServicesManager* instance() {
+        static std::unique_ptr<ServicesManager> inst { new ServicesManager };
+        return inst.get();
+    }
 };
 
-ServicesList* s_services_list { nullptr };
+const ConfigSet::Entry s_configdata[] = {
+    // key, type, value, short description, long description
+    { "enable", CALI_TYPE_STRING, "",
+      "List of service modules to enable",
+      "A list of comma-separated names of the service modules to enable"
+    },
+    ConfigSet::Terminator
+};
 
-}
+} // namespace [anonymous]
 
 
 namespace cali
 {
 
-struct Services::ServicesImpl
+namespace services
 {
-    // --- data
 
-    static std::unique_ptr<ServicesImpl> s_instance;
-    static const ConfigSet::Entry        s_configdata[];
+bool register_service(Caliper* c, Channel* channel, const char* name)
+{
+    return ServicesManager::instance()->register_service(name, c, channel);
+}
 
-    ConfigSet m_config;
+void register_configured_services(Caliper* c, Channel* channel)
+{
+    std::vector<std::string> services =
+        channel->config().init("services", s_configdata).get("enable").to_stringlist(",:");
 
+    ServicesManager* sM = ServicesManager::instance();
 
-    // --- interface
-
-    void register_services(Caliper* c) {
-        // list services
-
-        if (Log::verbosity() >= 2) {
-            ostringstream sstr;
-
-            for (const ServicesList* lp = ::s_services_list; lp; lp = lp->next)
-                for (const CaliperService* s = lp->services; s->name && s->register_fn; ++s)
-                    sstr << ' ' << s->name;
-
-            Log(2).stream() << "Available services:" << sstr.str() << endl;
-        }
-
-        vector<string> services = m_config.get("enable").to_stringlist(",:");
-
-        // register caliper services
-
-        for (const ServicesList* lp = ::s_services_list; lp; lp = lp->next)
-            for (const CaliperService* s = lp->services; s->name && s->register_fn; ++s) {
-                auto it = find(services.begin(), services.end(), string(s->name));
-
-                if (it != services.end()) {
-                    (*s->register_fn)(c);
-                    services.erase(it);
-                }
-            }
-
-        for ( const string& s : services )
-            Log(0).stream() << "Warning: service \"" << s << "\" not found" << endl;
+    for (const std::string& s : services) {
+        if (!sM->register_service(s.c_str(), c, channel))
+            Log(0).stream() << "Service \"" << s << "\" not found!" << std::endl;
     }
+}
 
-    ServicesImpl()
-        : m_config { RuntimeConfig::init("services", s_configdata) }
-        { }
+void add_service_specs(const CaliperService* services)
+{
+    ServicesManager::instance()->add_services(services);
+}
 
-    static ServicesImpl* instance() {
-        if (!s_instance)
-            s_instance.reset(new ServicesImpl);
+std::vector<std::string> get_available_services()
+{
+    return ServicesManager::instance()->get_available_services();
+}
 
-        return s_instance.get();
-    }
-};
-
-unique_ptr<Services::ServicesImpl> Services::ServicesImpl::s_instance      { nullptr };
-
-const ConfigSet::Entry             Services::ServicesImpl::s_configdata[] = {
-    // key, type, value, short description, long description
-    { "enable", CALI_TYPE_STRING, "",
-      "List of service modules to enable",
-      "A list of comma-separated names of the service modules to enable"      
-    },
-    ConfigSet::Terminator
-};
+} // namespace services
 
 } // namespace cali
-
-
-//
-// --- Services public interface
-//
-
-void Services::add_services(const CaliperService* services)
-{
-    ::ServicesList* elem = new ServicesList { services, ::s_services_list };
-    ::s_services_list = elem;
-}
-
-void Services::add_default_services()
-{
-    add_services(caliper_services);
-}
-
-void Services::register_services(Caliper* c)
-{
-    return ServicesImpl::instance()->register_services(c);
-}

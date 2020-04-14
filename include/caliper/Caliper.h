@@ -1,36 +1,7 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
-/// \file Caliper.h 
+/// \file Caliper.h
 /// Initialization function and global data declaration
 
 #pragma once
@@ -40,152 +11,221 @@
 #include "common/Attribute.h"
 #include "common/CaliperMetadataAccessInterface.h"
 #include "common/Entry.h"
-#include "common/Record.h"
+#include "common/IdType.h"
 #include "common/Variant.h"
 #include "common/util/callback.hpp"
 
+#include <memory>
 #include <utility>
 
 namespace cali
 {
 
-// Forward declarations
+// --- Forward declarations
 
-class CaliperService;
-class Node;    
-class SnapshotRecord;
-    
+class  Caliper;
+struct CaliperService;
+class  Node;
+class  RuntimeConfig;
+class  SnapshotRecord;
+
+// --- Typedefs
+
+typedef std::function<void(CaliperMetadataAccessInterface&,const std::vector<cali::Entry>&)> SnapshotFlushFn;
+
+/// \brief Maintain a single data collection configuration with
+///    callbacks and associated measurement data.
+class Channel : public IdType
+{
+    struct ChannelImpl;
+
+    std::shared_ptr<ChannelImpl> mP;
+
+    Channel(cali_id_t id, const char* name, const RuntimeConfig& cfg);
+
+public:
+
+    ~Channel();
+
+    // --- Events (callback functions)
+
+    /// \brief Holds the %Caliper callbacks for a channel.
+    struct Events {
+        typedef util::callback<void(Caliper*,Channel*,const Attribute&)>
+            attribute_cbvec;
+        typedef util::callback<void(Caliper*,Channel*,const Attribute&,const Variant&)>
+            update_cbvec;
+        typedef util::callback<void(Caliper*,Channel*)>
+            caliper_cbvec;
+
+        typedef util::callback<void(Caliper*,Channel*,int,const SnapshotRecord*,SnapshotRecord*)>
+            snapshot_cbvec;
+        typedef util::callback<void(Caliper*,Channel*,const SnapshotRecord*,const SnapshotRecord*)>
+            process_snapshot_cbvec;
+        typedef util::callback<void(Caliper*,Channel*,std::vector<Entry>&)>
+            edit_snapshot_cbvec;
+
+        typedef util::callback<void(Caliper*,Channel*,const SnapshotRecord*,SnapshotFlushFn)>
+            flush_cbvec;
+        typedef util::callback<void(Caliper*,Channel*,const SnapshotRecord*)>
+            write_cbvec;
+
+        typedef util::callback<void(Caliper*,Channel*,const void*, const char*, size_t, size_t, const size_t*,
+                size_t, const Attribute*, const Variant*)>
+            track_mem_cbvec;
+        typedef util::callback<void(Caliper*,Channel*,const void*)>
+            untrack_mem_cbvec;
+
+        /// \brief Invoked when a new attribute has been created.
+        attribute_cbvec        create_attr_evt;
+
+        /// \brief Invoked on region begin, \e before it has been put on the blackboard.
+        update_cbvec           pre_begin_evt;
+        /// \brief Invoked on region begin, \e after it has been put on the blackboard.
+        update_cbvec           post_begin_evt;
+        /// \brief Invoked when value is set, \e before it has been put on the blackboard.
+        update_cbvec           pre_set_evt;
+        /// \brief Invoked when value is set, \e after it has been put on the blackboard.
+        update_cbvec           post_set_evt;
+        /// \brief Invoked on region end, \e before it has been removed from the blackboard.
+        update_cbvec           pre_end_evt;
+        /// \brief Invoked on region end, \e after it has been removed from the blackboard.
+        update_cbvec           post_end_evt;
+
+        /// \brief Invoked when a new thread context is being created.
+        caliper_cbvec          create_thread_evt;
+        /// \brief Invoked when a thread context is being released.
+        caliper_cbvec          release_thread_evt;
+
+        /// \brief Invoked at the end of a %Caliper channel initialization.
+        ///
+        /// At this point, all registered services have been initialized.
+        caliper_cbvec          post_init_evt;
+        /// \brief Invoked at the end of %Caliper channel finalization.
+        ///
+        /// At this point, other services in this channel may already be
+        /// destroyed. It is no longer safe to use any %Caliper API calls for
+        /// this channel. It is for local cleanup only.
+        caliper_cbvec          finish_evt;
+
+        /// \brief Invoked when a snapshot is being taken.
+        ///
+        /// Use this callback to take performance measurements and append them
+        /// to the snapshot record.
+        snapshot_cbvec         snapshot;
+        /// \brief Invoked when a snapshot has been completed.
+        ///
+        /// Used by snapshot processing services (e.g., trace and aggregate) to
+        /// store the snasphot record.
+        process_snapshot_cbvec process_snapshot;
+
+        /// \brief Invoked before flush.
+        write_cbvec            pre_flush_evt;
+        /// \brief Flush all snapshot records.
+        flush_cbvec            flush_evt;
+        /// \brief Invoked after flush.
+        write_cbvec            post_flush_evt;
+
+        /// \brief Modify snapshot records during flush.
+        edit_snapshot_cbvec    postprocess_snapshot;
+
+        /// \brief Write output.
+        ///
+        /// This is invoked by the Caliper::flush_and_write() API call, and
+        /// causes output services (e.g., report or recorder) to trigger a
+        /// flush.
+        write_cbvec            write_output_evt;
+
+        /// \brief Invoked at a memory region begin.
+        track_mem_cbvec        track_mem_evt;
+        /// \brief Invoked at memory region end.
+        untrack_mem_cbvec      untrack_mem_evt;
+
+        /// \brief Clear local storage (trace buffers, aggregation DB)
+        caliper_cbvec          clear_evt;
+
+        /// \brief Process events for a subscription attribute in this channel.
+        ///
+        /// Indicates that the given subscription attribute should be tracked
+        /// in this channel. Subscription attributes are marked with the
+        /// \a subscription_event meta-attribute. They are used for attributes
+        /// that should be tracked in some channels but not necessarily all of
+        /// them, for example with wrapper services like IO or
+        /// MPI, where regions should only be tracked if the service is enabled
+        /// in the given channel.
+        attribute_cbvec        subscribe_attribute;
+    };
+
+    /// \brief Access the callback vectors to register callbacks for this channel.
+    Events&        events();
+
+    /// \brief Return the configuration for this channel.
+    RuntimeConfig  config();
+
+    // --- Channel management
+
+    /// \brief Return the channel's name.
+    std::string    name() const;
+
+    /// \brief Is the channel currently active?
+    ///
+    /// Channels can be enabled and disabled with Caliper::activate_channel()
+    /// and Caliper::deactivate_channel().
+    bool           is_active() const;
+
+    friend class Caliper;
+};
+
+
 /// \class Caliper
 /// \brief The main interface for the caliper runtime system
 
 class Caliper : public CaliperMetadataAccessInterface
 {
-public:
-
-    struct Scope;
-
-    typedef Scope* (*ScopeCallbackFn)(Caliper*, bool can_create);
-
-    
-private:
-    
     struct GlobalData;
-    
-    GlobalData* mG;
-    
-    Scope* m_thread_scope;
-    Scope* m_task_scope;
+    struct ThreadData;
 
-    bool   m_is_signal; // are we in a signal handler?
+    GlobalData* sG;
+    ThreadData* sT;
 
-    
-    Caliper(GlobalData* g, Scope* thread = 0, Scope* task = 0, bool sig = false)
-        : mG(g), m_thread_scope(thread), m_task_scope(task), m_is_signal(sig)
+    bool m_is_signal; // are we in a signal handler?
+
+    Caliper(GlobalData* g, ThreadData* t, bool sig)
+        : sG(g), sT(t), m_is_signal(sig)
         { }
 
-    Scope* scope(cali_context_scope_t scope);
-    
+    void release_thread();
 
 public:
-    
-    Caliper();
-    
-    ~Caliper()
-        { }
 
-    Caliper(const Caliper&) = default;
+    //
+    // --- Global Caliper API
+    //
 
-    Caliper& operator = (const Caliper&) = default;
+    /// \name Annotations (across channels)
+    /// \{
 
-    bool is_signal() const { return m_is_signal; };
+    cali_err  begin(const Attribute& attr, const Variant& data);
+    cali_err  end(const Attribute& attr);
+    cali_err  set(const Attribute& attr, const Variant& data);
 
-    // --- Typedefs
+    /// \}
+    /// \name Memory region tracking (across channels)
+    /// \{
 
-    typedef std::function<bool(const SnapshotRecord*)> SnapshotFlushFn;
-    
-    // --- Events
+    void      memory_region_begin(const void* ptr, const char* label, size_t elem_size, size_t ndim, const size_t dims[],
+                                  size_t n = 0, const Attribute* extra_attrs = nullptr, const Variant* extra_vals = nullptr);
+    void      memory_region_end(const void* ptr);
 
-    struct Events {
-        typedef util::callback<void(Caliper*,const Attribute&)>
-            create_attr_cbvec;
-        typedef util::callback<void(Caliper*,const std::string&,cali_attr_type,int*,Node**)>
-            pre_create_attr_cbvec;                        
-        typedef util::callback<void(Caliper*,const Attribute&,const Variant&)>
-            update_cbvec;
-        typedef util::callback<void(Caliper*)>
-            caliper_cbvec;
-        typedef util::callback<void(Caliper*,cali_context_scope_t)>
-            scope_cbvec;
-
-        typedef util::callback<void(Caliper*,int,const SnapshotRecord*,SnapshotRecord*)>
-            snapshot_cbvec;
-        typedef util::callback<void(Caliper*,const SnapshotRecord*,const SnapshotRecord*)>
-            process_snapshot_cbvec;
-        typedef util::callback<void(Caliper*,SnapshotRecord*)>
-            edit_snapshot_cbvec;
-
-        typedef util::callback<void(Caliper*,const SnapshotRecord*,SnapshotFlushFn)>
-            flush_cbvec;
-        typedef util::callback<void(Caliper*,const SnapshotRecord*)>
-            write_cbvec;
-
-        typedef util::callback<void(Caliper*,const void*, const char*, size_t, size_t, const size_t*)>
-            track_mem_cbvec;
-        typedef util::callback<void(Caliper*,const void*)>
-            untrack_mem_cbvec;
-                                            
-        pre_create_attr_cbvec  pre_create_attr_evt;
-        create_attr_cbvec      create_attr_evt;
-
-        update_cbvec           pre_begin_evt;
-        update_cbvec           post_begin_evt;
-        update_cbvec           pre_set_evt;
-        update_cbvec           post_set_evt;
-        update_cbvec           pre_end_evt;
-        update_cbvec           post_end_evt;
-
-        scope_cbvec            create_scope_evt;
-        scope_cbvec            release_scope_evt;
-
-        caliper_cbvec          post_init_evt;
-        caliper_cbvec          finish_evt;
-
-        snapshot_cbvec         snapshot;
-        process_snapshot_cbvec process_snapshot;
-
-        write_cbvec            pre_flush_evt;
-        flush_cbvec            flush_evt;
-
-        edit_snapshot_cbvec    postprocess_snapshot;
-
-        write_cbvec            pre_write_evt;
-        process_snapshot_cbvec write_snapshot;
-        write_cbvec            post_write_evt;
-
-        track_mem_cbvec        track_mem_evt;
-        untrack_mem_cbvec      untrack_mem_evt;
-
-        caliper_cbvec          clear_evt;
-    };
-
-    Events&   events();
-
-    // --- Context environment API
-
-    Scope*    create_scope(cali_context_scope_t context);
-    Scope*    default_scope(cali_context_scope_t context);
-
-    void      release_scope(Scope*);
-
-    void      set_scope_callback(cali_context_scope_t context, ScopeCallbackFn cb);
-
-    // --- Snapshot API
+    //
+    // --- Per-channel API
+    //
 
     /// \name Snapshot API
     /// \{
 
-    void      push_snapshot(int scopes, const SnapshotRecord* trigger_info);
-    void      pull_snapshot(int scopes, const SnapshotRecord* trigger_info, SnapshotRecord* snapshot);
+    void      push_snapshot(Channel* chn, const SnapshotRecord* trigger_info);
+    void      pull_snapshot(Channel* chn, int scopes, const SnapshotRecord* trigger_info, SnapshotRecord* snapshot);
 
     // --- Flush and I/O API
 
@@ -193,21 +233,28 @@ public:
     /// \name Flush and I/O
     /// \{
 
-    void      flush(const SnapshotRecord* flush_info, SnapshotFlushFn proc_fn);
-    void      flush_and_write(const SnapshotRecord* flush_info);
+    void      flush(Channel* chn, const SnapshotRecord* flush_info, SnapshotFlushFn proc_fn);
+    void      flush_and_write(Channel* chn, const SnapshotRecord* flush_info);
 
-    void      clear();
+    void      clear(Channel* chn);
 
     // --- Annotation API
 
     /// \}
-    /// \name Annotation API
+    /// \name Annotation (single channel)
     /// \{
 
-    cali_err  begin(const Attribute& attr, const Variant& data);
-    cali_err  end(const Attribute& attr);
-    cali_err  set(const Attribute& attr, const Variant& data);
-    cali_err  set_path(const Attribute& attr, size_t n, const Variant data[]);
+    cali_err  begin(Channel* channel, const Attribute& attr, const Variant& data);
+    cali_err  end(Channel* channel, const Attribute& attr);
+    cali_err  set(Channel* channel, const Attribute& attr, const Variant& data);
+
+    /// \}
+    /// \name Memory region tracking (single channel)
+    /// \{
+
+    void      memory_region_begin(Channel* chn, const void* ptr, const char* label, size_t elem_size, size_t ndim, const size_t dims[],
+                                  size_t n = 0, const Attribute* extra_attr = nullptr, const Variant* extra_val = nullptr);
+    void      memory_region_end(Channel* chn, const void* ptr);
 
     /// \}
     /// \name Blackboard access
@@ -216,30 +263,20 @@ public:
     Variant   exchange(const Attribute& attr, const Variant& data);
 
     Entry     get(const Attribute& attr);
+    Entry     get(Channel* channel, const Attribute& attr);
 
-    /// \}
-    /// \name Memory region tracking
-    /// \{
-
-    void      memory_region_begin(const void* ptr, const char* label, size_t elem_size, size_t ndim, const size_t dims[]);
-
-    void      memory_region_end(const void* ptr);
-
-    // --- Direct metadata / data access API
+    std::vector<Entry> get_globals();
+    std::vector<Entry> get_globals(Channel* channel);
 
     /// \}
     /// \name Explicit snapshot record manipulation
     /// \{
 
-    void      make_entrylist(size_t n, 
-                             const Attribute  attr[], 
-                             const Variant    data[], 
-                             SnapshotRecord&  list,
-                             cali::Node*      parent = nullptr);
-    void      make_entrylist(const Attribute& attr, 
-                             size_t           n,
-                             const Variant    data[], 
-                             SnapshotRecord&  list);
+    void      make_record(size_t n,
+                          const Attribute  attr[],
+                          const Variant    data[],
+                          SnapshotRecord&  list,
+                          cali::Node*      parent = nullptr);
 
     // --- Metadata Access Interface
 
@@ -249,10 +286,12 @@ public:
 
     size_t    num_attributes() const;
 
+    bool      attribute_exists(const std::string& name) const;
+
     Attribute get_attribute(cali_id_t id) const;
     Attribute get_attribute(const std::string& name) const;
 
-    std::vector<Attribute> get_attributes() const;
+    std::vector<Attribute> get_all_attributes() const;
 
     Attribute create_attribute(const std::string& name,
                                cali_attr_type     type,
@@ -260,33 +299,60 @@ public:
                                int                meta = 0,
                                const Attribute*   meta_attr = nullptr,
                                const Variant*     meta_data = nullptr);
-    
+
     /// \brief Return node by id
     Node*     node(cali_id_t id) const;
 
-    /// \brief Get or create tree path with data from given nodes in given order 
+    /// \brief Get or create tree branch with data from given nodes in given order
     Node*     make_tree_entry(size_t n, const Node* nodelist[], Node* parent = nullptr);
 
     /// \brief Get or create tree entry with given attribute/value pair
     Node*     make_tree_entry(const Attribute& attr, const Variant& value, Node* parent = nullptr);
 
-    /// \brief Get the CALI_ATTR_GLOBAL entries
-    std::vector<Entry> get_globals();
+    /// \brief Get or create tree branch with given attribute and values
+    Node*     make_tree_entry(const Attribute& attr, size_t n, const Variant values[], Node* parent = nullptr);
+
+    /// \}
+    /// \name Channel API
+    /// \{
+
+    Channel* create_channel(const char* name, const RuntimeConfig& cfg);
+
+    std::vector<Channel*> get_all_channels();
+
+    Channel* get_channel(cali_id_t id);
+    // Channel* get_channel(const char* name);
+
+    void     delete_channel(Channel* chn);
+
+    void     activate_channel(Channel* chn);
+    void     deactivate_channel(Channel* chn);
+
+    void     finalize();
 
     /// \}
 
     // --- Caliper API access
 
-    operator bool () const {
-        return mG != 0;
-    }
+    Caliper();
+
+    ~Caliper()
+        { }
+
+    Caliper(const Caliper&) = default;
+
+    Caliper& operator = (const Caliper&) = default;
+
+    bool is_signal() const { return m_is_signal; };
+
+    operator bool () const;
 
     static Caliper instance();
-    static void    release();
-    
     static Caliper sigsafe_instance();
 
     static bool    is_initialized();
+
+    static void    release();
 
     /// \brief Add a list of available caliper services.
     static void    add_services(const CaliperService*);

@@ -1,34 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // Cupti.cpp
 // Implementation of Cupti service
@@ -59,54 +30,22 @@ using namespace cali;
 
 namespace
 {
+
+class CuptiService
+{
     //
     // --- Data
     //
 
-    ConfigSet              config;
-    const ConfigSet::Entry configdata[] = {
-        { "callback_domains", CALI_TYPE_STRING, "runtime:sync",
-          "List of CUDA callback domains to capture",
-          "List of CUDA callback domains to capture. Possible values:\n"
-          "  runtime  :  Capture CUDA runtime API calls\n"
-          "  driver   :  Capture CUDA driver calls\n"
-          "  resource :  Capture CUDA resource creation events\n"
-          "  sync     :  Capture CUDA synchronization events\n"
-          "  nvtx     :  Capture NVidia NVTX annotations\n"
-          "  none     :  Don't capture callbacks"
-        },
-        { "record_symbol", CALI_TYPE_BOOL, "true",
-          "Record symbol name (kernel) for CUDA runtime and driver callbacks",
-          "Record symbol name (kernel) for CUDA runtime and driver callbacks"
-        },
-        { "record_context", CALI_TYPE_BOOL, "true",
-          "Record CUDA context ID for CUDA runtime and driver callbacks",
-          "Record CUDA context ID for CUDA runtime and driver callbacks"
-        },
-        { "sample_events", CALI_TYPE_STRING, "",
-          "CUpti events to sample",
-          "CUpti events to sample"
-        },
-        { "sample_event_id", CALI_TYPE_UINT, "0",
-          "CUpti event ID to sample",
-          "CUpti event ID to sample"
-        },
+    ConfigSet config;
+    static const ConfigSet::Entry   s_configdata[];
 
-        ConfigSet::Terminator
-    };
-
-    const struct CallbackDomainInfo {
+    struct CallbackDomainInfo {
         CUpti_CallbackDomain domain;
         const char* name;
-    } callback_domains[] = {
-        { CUPTI_CB_DOMAIN_RUNTIME_API, "runtime"  },
-        { CUPTI_CB_DOMAIN_DRIVER_API,  "driver"   },
-        { CUPTI_CB_DOMAIN_RESOURCE,    "resource" },
-        { CUPTI_CB_DOMAIN_SYNCHRONIZE, "sync"     },
-        { CUPTI_CB_DOMAIN_NVTX,        "nvtx"     },
-        { CUPTI_CB_DOMAIN_INVALID,     "none"     },
-        { CUPTI_CB_DOMAIN_INVALID,     0          }
     };
+
+    static const CallbackDomainInfo s_callback_domains[];
 
     struct CuptiServiceInfo {
         Attribute runtime_attr;
@@ -133,12 +72,14 @@ namespace
     unsigned               num_nvtx_cb;
 
     Cupti::EventSampling   event_sampling;
-    
+
+    Channel*            channel;
+
     //
     // --- Helper functions
     //
 
-    void
+    static void
     print_cupti_error(std::ostream& os, CUptiResult err, const char* func)
     {
         const char* errstr;
@@ -181,8 +122,8 @@ namespace
 
         Caliper c;
 
-        c.make_entrylist(4, attr, vals, trigger_info);
-        c.push_snapshot(CALI_SCOPE_PROCESS | CALI_SCOPE_THREAD, &trigger_info);
+        c.make_record(4, attr, vals, trigger_info);
+        c.push_snapshot(channel, &trigger_info);
     }
 
     void
@@ -208,8 +149,8 @@ namespace
 
         Caliper c;
 
-        c.make_entrylist(3, attr, vals, trigger_info);
-        c.push_snapshot(CALI_SCOPE_PROCESS | CALI_SCOPE_THREAD, &trigger_info);
+        c.make_record(3, attr, vals, trigger_info);
+        c.push_snapshot(channel, &trigger_info);
     }
 
     void
@@ -221,7 +162,7 @@ namespace
         case CUPTI_CBID_RESOURCE_CONTEXT_CREATED:
             if (event_sampling.is_enabled())
                 event_sampling.enable_sampling_for_context(cbInfo->context);
-            
+
             handle_context_event(cbInfo->context,
                                  cupti_info.resource_attr,
                                  Variant(CALI_TYPE_STRING, "create_context", 15));
@@ -291,7 +232,7 @@ namespace
         if (cbInfo->callbackSite == CUPTI_API_ENTER) {
             if (cupti_info.record_symbol && cbInfo->symbolName) {
                 Variant v_sname(CALI_TYPE_STRING, cbInfo->symbolName, strlen(cbInfo->symbolName));
-                c.set(cupti_info.symbol_attr, v_sname);
+                c.begin(cupti_info.symbol_attr, v_sname);
             }
 
             Variant v_fname(CALI_TYPE_STRING, cbInfo->functionName, strlen(cbInfo->functionName));
@@ -311,14 +252,15 @@ namespace
 
         const void* p = cbInfo->functionParams;
 
+        Caliper c;
+
         switch (cbid) {
         case CUPTI_CBID_NVTX_nvtxRangePushA:
         {
             const char* msg =
                 static_cast<const nvtxRangePushA_params*>(p)->message;
 
-            Caliper().begin(cupti_info.nvtx_range_attr,
-                            Variant(CALI_TYPE_STRING, msg, strlen(msg)+1));
+            c.begin(cupti_info.nvtx_range_attr, Variant(msg));
         }
         break;
         case CUPTI_CBID_NVTX_nvtxRangePushEx:
@@ -326,12 +268,11 @@ namespace
             const char* msg =
                 static_cast<const nvtxRangePushEx_params*>(p)->eventAttrib->message.ascii;
 
-            Caliper().begin(cupti_info.nvtx_range_attr,
-                            Variant(CALI_TYPE_STRING, msg, strlen(msg)+1));
+            c.begin(cupti_info.nvtx_range_attr, Variant(msg));
         }
         break;
         case CUPTI_CBID_NVTX_nvtxRangePop:
-            Caliper().end(cupti_info.nvtx_range_attr);
+            c.end(channel, cupti_info.nvtx_range_attr);
             break;
         case CUPTI_CBID_NVTX_nvtxDomainRangePushEx:
         {
@@ -340,46 +281,47 @@ namespace
             const char* msg =
                 static_cast<const nvtxDomainRangePushEx_params*>(p)->core.eventAttrib->message.ascii;
 
-            Caliper().begin(cupti_info.nvtx_range_attr,
-                            Variant(CALI_TYPE_STRING, msg, strlen(msg)+1));
+            c.begin(cupti_info.nvtx_range_attr, Variant(msg));
         }
         break;
         case CUPTI_CBID_NVTX_nvtxDomainRangePop:
             // TODO: Use domain-specific attribute
-            Caliper().end(cupti_info.nvtx_range_attr);
+            c.end(cupti_info.nvtx_range_attr);
             break;
         default:
             ;
         }
     }
 
-    void CUPTIAPI
+    static void CUPTIAPI
     cupti_callback(void* userdata,
                    CUpti_CallbackDomain domain,
                    CUpti_CallbackId     cbid,
                    void* cbInfo)
     {
-        ++num_cb;
+        CuptiService* instance = static_cast<CuptiService*>(userdata);
+
+        ++(instance->num_cb);
 
         switch (domain) {
         case CUPTI_CB_DOMAIN_RESOURCE:
-            handle_resource(static_cast<CUpti_CallbackIdResource>(cbid),
-                            static_cast<CUpti_ResourceData*>(cbInfo));
+            instance->handle_resource(static_cast<CUpti_CallbackIdResource>(cbid),
+                                      static_cast<CUpti_ResourceData*>(cbInfo));
             break;
         case CUPTI_CB_DOMAIN_SYNCHRONIZE:
-            handle_synchronize(static_cast<CUpti_CallbackIdSync>(cbid),
-                               static_cast<CUpti_SynchronizeData*>(cbInfo));
+            instance->handle_synchronize(static_cast<CUpti_CallbackIdSync>(cbid),
+                                         static_cast<CUpti_SynchronizeData*>(cbInfo));
             break;
         case CUPTI_CB_DOMAIN_RUNTIME_API:
-            handle_callback(cbid, static_cast<CUpti_CallbackData*>(cbInfo),
-                            cupti_info.runtime_attr);
+            instance->handle_callback(cbid, static_cast<CUpti_CallbackData*>(cbInfo),
+                                      instance->cupti_info.runtime_attr);
             break;
         case CUPTI_CB_DOMAIN_DRIVER_API:
-            handle_callback(cbid, static_cast<CUpti_CallbackData*>(cbInfo),
-                            cupti_info.driver_attr);
+            instance->handle_callback(cbid, static_cast<CUpti_CallbackData*>(cbInfo),
+                                      instance->cupti_info.driver_attr);
             break;
         case CUPTI_CB_DOMAIN_NVTX:
-            handle_nvtx(cbid, static_cast<CUpti_NvtxData*>(cbInfo));
+            instance->handle_nvtx(cbid, static_cast<CUpti_NvtxData*>(cbInfo));
             break;
         default:
             Log(2).stream() << "cupti: Unknown callback domain " << domain << std::endl;
@@ -389,16 +331,16 @@ namespace
     }
 
     void
-    snapshot_cb(Caliper* c, int /* scope */, const SnapshotRecord* trigger_info, SnapshotRecord* snapshot)
+    snapshot_cb(Caliper* c, Channel*, int /* scope */, const SnapshotRecord* trigger_info, SnapshotRecord* snapshot)
     {
         event_sampling.snapshot(c, trigger_info, snapshot);
     }
-    
+
     void
-    finish_cb(Caliper* c)
+    finish_cb(Caliper* c, Channel* chn)
     {
         if (Log::verbosity() >= 2) {
-            Log(2).stream() << "Cupti: processed "
+            Log(2).stream() << chn->name() << ": Cupti: processed "
                             << num_api_cb      << " API callbacks, "
                             << num_resource_cb << " resource callbacks, "
                             << num_sync_cb     << " sync callbacks, "
@@ -409,31 +351,43 @@ namespace
             if (event_sampling.is_enabled())
                 event_sampling.print_statistics(Log(2).stream());
         }
-        
+
         event_sampling.stop_all();
-        
+
         cuptiUnsubscribe(subscriber);
         cuptiFinalize();
     }
 
     void
-    post_init_cb(Caliper* c)
+    subscribe_attributes(Caliper* c, Channel* channel)
     {
-        //   Need to create attributes in post_init so they're created after
-        // the event service.
+        channel->events().subscribe_attribute(c, channel, cupti_info.runtime_attr);
+        channel->events().subscribe_attribute(c, channel, cupti_info.driver_attr);
+        channel->events().subscribe_attribute(c, channel, cupti_info.nvtx_range_attr);
+    }
 
+    void
+    create_attributes(Caliper* c)
+    {
+        Attribute subs_attr = c->get_attribute("subscription_event");
         Variant v_true(true);
 
         cupti_info.runtime_attr =
-            c->create_attribute("cupti.runtimeAPI", CALI_TYPE_STRING, CALI_ATTR_NESTED);
+            c->create_attribute("cupti.runtimeAPI", CALI_TYPE_STRING,
+                                CALI_ATTR_NESTED,
+                                1, &subs_attr, &v_true);
         cupti_info.driver_attr =
-            c->create_attribute("cupti.driverAPI",  CALI_TYPE_STRING, CALI_ATTR_NESTED);
+            c->create_attribute("cupti.driverAPI",  CALI_TYPE_STRING,
+                                CALI_ATTR_NESTED,
+                                1, &subs_attr, &v_true);
         cupti_info.resource_attr =
-            c->create_attribute("cupti.resource",   CALI_TYPE_STRING, CALI_ATTR_DEFAULT);
+            c->create_attribute("cupti.resource",   CALI_TYPE_STRING, CALI_ATTR_SKIP_EVENTS);
         cupti_info.sync_attr =
-            c->create_attribute("cupti.sync",       CALI_TYPE_STRING, CALI_ATTR_DEFAULT);
+            c->create_attribute("cupti.sync",       CALI_TYPE_STRING, CALI_ATTR_SKIP_EVENTS);
         cupti_info.nvtx_range_attr =
-            c->create_attribute("nvtx.range",       CALI_TYPE_STRING, CALI_ATTR_NESTED);
+            c->create_attribute("nvtx.range",       CALI_TYPE_STRING,
+                                CALI_ATTR_NESTED,
+                                1, &subs_attr, &v_true);
 
         cupti_info.context_attr =
             c->create_attribute("cupti.contextID",  CALI_TYPE_UINT,   CALI_ATTR_SKIP_EVENTS);
@@ -451,7 +405,7 @@ namespace
         CUptiResult res =
             cuptiSubscribe(&subscriber,
                            (CUpti_CallbackFunc) cupti_callback,
-                           &cupti_info);
+                           this);
 
         if (res != CUPTI_SUCCESS) {
             print_cupti_error(Log(0).stream(), res, "cuptiSubscribe");
@@ -461,7 +415,7 @@ namespace
         std::vector<std::string> cb_domain_names =
             config.get("callback_domains").to_stringlist(",:");
 
-        // add "resource" domain when event sampling is enabled 
+        // add "resource" domain when event sampling is enabled
         if (event_sampling.is_enabled() &&
             std::find(cb_domain_names.begin(), cb_domain_names.end(),
                       "resource") == cb_domain_names.end()) {
@@ -473,7 +427,7 @@ namespace
         }
 
         for (const std::string& s : cb_domain_names) {
-            const CallbackDomainInfo* cbinfo = callback_domains;
+            const CallbackDomainInfo* cbinfo = s_callback_domains;
 
             for ( ; cbinfo->name && s != cbinfo->name; ++cbinfo)
                 ;
@@ -501,40 +455,103 @@ namespace
         return true;
     }
 
-    void
-    cuptiservice_initialize(Caliper* c)
+    CuptiService(Caliper* c, Channel* chn)
+        : config(chn->config().init("cupti", s_configdata)),
+          num_cb(0),
+          num_api_cb(0),
+          num_resource_cb(0),
+          num_sync_cb(0),
+          num_nvtx_cb(0),
+          channel(chn)
+        {
+            cupti_info.record_context = config.get("record_context").to_bool();
+            cupti_info.record_symbol  = config.get("record_symbol").to_bool();
+
+            uint64_t sample_event_id = config.get("sample_event_id").to_uint();
+
+            if (sample_event_id > 0)
+                event_sampling.setup(c, static_cast<CUpti_EventID>(sample_event_id));
+
+            create_attributes(c);
+        }
+
+public:
+
+    static void
+    cuptiservice_initialize(Caliper* c, Channel* chn)
     {
-        config = RuntimeConfig::init("cupti", configdata);
+        CuptiService* instance = new CuptiService(c, chn);
 
-        num_cb          = 0;
-        num_api_cb      = 0;
-        num_resource_cb = 0;
-        num_sync_cb     = 0;
-        num_nvtx_cb     = 0;
-
-        uint64_t sample_event_id = config.get("sample_event_id").to_uint();
-
-        if (sample_event_id > 0)
-            event_sampling.setup(c, static_cast<CUpti_EventID>(sample_event_id));
-        
-        if (!register_callback_domains())
+        if (!instance->register_callback_domains())
             return;
 
-        cupti_info.record_context = config.get("record_context").to_bool();
-        cupti_info.record_symbol  = config.get("record_symbol").to_bool();
+        if (instance->event_sampling.is_enabled())
+            chn->events().snapshot.connect(
+                [instance](Caliper* c, Channel* chn, int scope, const SnapshotRecord* info, SnapshotRecord* rec){
+                    instance->snapshot_cb(c, chn, scope, info, rec);
+                });
 
-        if (event_sampling.is_enabled())
-            c->events().snapshot.connect(&snapshot_cb);
+        chn->events().post_init_evt.connect(
+            [instance](Caliper* c, Channel* channel){
+                instance->subscribe_attributes(c, channel);
+            });
+        chn->events().finish_evt.connect(
+            [instance](Caliper* c, Channel* chn){
+                instance->finish_cb(c, chn);
+                delete instance;
+            });
 
-        c->events().post_init_evt.connect(&post_init_cb);
-        c->events().finish_evt.connect(&finish_cb);
-
-        Log(1).stream() << "Registered cupti service" << std::endl;
+        Log(1).stream() << chn->name() << ": Registered cupti service" << std::endl;
     }
+
+}; // CuptiService
+
+const ConfigSet::Entry CuptiService::s_configdata[] = {
+    { "callback_domains", CALI_TYPE_STRING, "runtime:sync",
+      "List of CUDA callback domains to capture",
+      "List of CUDA callback domains to capture. Possible values:\n"
+      "  runtime  :  Capture CUDA runtime API calls\n"
+      "  driver   :  Capture CUDA driver calls\n"
+      "  resource :  Capture CUDA resource creation events\n"
+      "  sync     :  Capture CUDA synchronization events\n"
+      "  nvtx     :  Capture NVidia NVTX annotations\n"
+      "  none     :  Don't capture callbacks"
+    },
+    { "record_symbol", CALI_TYPE_BOOL, "true",
+      "Record symbol name (kernel) for CUDA runtime and driver callbacks",
+      "Record symbol name (kernel) for CUDA runtime and driver callbacks"
+    },
+    { "record_context", CALI_TYPE_BOOL, "true",
+      "Record CUDA context ID for CUDA runtime and driver callbacks",
+      "Record CUDA context ID for CUDA runtime and driver callbacks"
+    },
+    { "sample_events", CALI_TYPE_STRING, "",
+      "CUpti events to sample",
+      "CUpti events to sample"
+    },
+    { "sample_event_id", CALI_TYPE_UINT, "0",
+      "CUpti event ID to sample",
+      "CUpti event ID to sample"
+    },
+
+    ConfigSet::Terminator
+};
+
+const CuptiService::CallbackDomainInfo CuptiService::s_callback_domains[] = {
+    { CUPTI_CB_DOMAIN_RUNTIME_API, "runtime"  },
+    { CUPTI_CB_DOMAIN_DRIVER_API,  "driver"   },
+    { CUPTI_CB_DOMAIN_RESOURCE,    "resource" },
+    { CUPTI_CB_DOMAIN_SYNCHRONIZE, "sync"     },
+    { CUPTI_CB_DOMAIN_NVTX,        "nvtx"     },
+    { CUPTI_CB_DOMAIN_INVALID,     "none"     },
+    { CUPTI_CB_DOMAIN_INVALID,     0          }
+};
 
 } // namespace
 
 namespace cali
 {
-    CaliperService cupti_service = { "cupti", ::cuptiservice_initialize };
+
+CaliperService cupti_service = { "cupti", ::CuptiService::cuptiservice_initialize };
+
 }

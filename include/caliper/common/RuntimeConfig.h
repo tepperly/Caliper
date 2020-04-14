@@ -1,34 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 /// \file RuntimeConfig.h
 /// RuntimeConfig definition
@@ -40,6 +11,7 @@
 
 #include "cali_types.h"
 
+#include <map>
 #include <memory>
 #include <string>
 
@@ -89,59 +61,22 @@ public:
     StringConverter get(const char* set, const char* key);
 
     /// \brief Initialize a ConfigSet.
-    ConfigSet       init_configset(const char* name, const ConfigSet::Entry* set);
+    ConfigSet       init(const char* name, const ConfigSet::Entry* set);
 
     /// \brief Pre-set config entry \a key to \a value.
     ///
     /// The value may be overwritten by configuration files or environment
     /// variables.
-    ///
-    /// \note: Only effective *before* initialization of the %Caliper
-    ///   runtime system.
     void            preset(const char* key, const std::string& value);
 
     /// \brief Set config entry \a key to \a value.
     ///
     /// The value will *not* be overwritten by configuration files,
     /// profile settings, or environment variables.
-    ///
-    /// \note: Only effective *before* initialization of the %Caliper
-    ///   runtime system.
     void            set(const char* key, const std::string& value);
 
-    /// \brief Define a %Caliper configuration profile.
-    ///
-    /// A configuration profile is a named set of specific
-    /// configuration settings. The entire set can be enabled by its name
-    /// with a single configuration entry.
-    ///
-    /// This function only defines a configuration profile, but does not
-    /// enable it. %Caliper uses the profiles named in the
-    /// \t CALI_CONFIG_PROFILE configuration entry; to enable a profile
-    /// set this configuration entry accordingly.
-    ///
-    /// Example:
-    ///
-    /// \code
-    ///   const char* my_profile[][2] =
-    ///     { { "CALI_SERVICES_ENABLE", "aggregate,event,timestamp,trace" },
-    ///       { "CALI_EVENT_TRIGGER",   "annotation" },
-    ///       { NULL, NULL }
-    ///     };
-    ///
-    ///   // Define the "my_profile" config profile
-    ///   cali::RuntimeConfig::define_profile("my_profile", my_profile);
-    ///   cali::RuntimeConfig::set("CALI_CONFIG_PROFILE", "my_profile");
-    /// \endcode
-    ///
-    /// \param name Name of the configuration profile.
-    /// \param keyvallist A list of key-value pairs as array of two strings
-    ///    that contains the profile's configuration entries. The first string
-    ///    in each entry is the configuration key, the second string is its
-    ///    value. Keys must be all uppercase. Terminate the list with two
-    ///    NULL entries: <tt> { NULL, NULL } </tt>.
-    void            define_profile(const char* name,
-                                   const char* keyvallist[][2]);
+    /// \brief Import config values from the given the \a values map
+    void            import(const std::map<std::string, std::string>& values);
     
     bool            allow_read_env();
 
@@ -168,10 +103,7 @@ public:
     // --- Static API (temporary)
     //
 
-    /// \brief Initialize a ConfigSet from the default config.
-    static ConfigSet      init(const char* name, const ConfigSet::Entry* set);
-
-    static RuntimeConfig* get_default_config(); 
+    static RuntimeConfig  get_default_config(); 
 
 }; // class RuntimeConfig
 

@@ -1,34 +1,5 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // MetadataTree implementation
 
@@ -63,7 +34,7 @@ struct MetadataTree::MetadataTreeImpl
 
     struct GlobalData {
         GlobalData(MemoryPool& pool)
-            : config(RuntimeConfig::init("contexttree", s_configdata)),
+            : config(RuntimeConfig::get_default_config().init("contexttree", s_configdata)),
               root(CALI_INV_ID, CALI_INV_ID, Variant()),
               next_block(1),
               node_blocks(0)
@@ -92,7 +63,8 @@ struct MetadataTree::MetadataTreeImpl
                     {  8, 8,  { CALI_TYPE_STRING, "cali.attribute.name",  19 }, 3 },
                     {  9, 8,  { CALI_TYPE_STRING, "cali.attribute.type",  19 }, 7 },
                     { 10, 8,  { CALI_TYPE_STRING, "cali.attribute.prop",  19 }, 1 },
-                    { CALI_INV_ID, CALI_INV_ID, { }, CALI_INV_ID },
+                    { 11, 9,  { CALI_TYPE_PTR    }, CALI_INV_ID },
+                    { CALI_INV_ID, CALI_INV_ID, { }, CALI_INV_ID }
                 };
 
                 for (const NodeInfo* info = bootstrap_nodes; info->id != CALI_INV_ID; ++info) {
@@ -109,7 +81,7 @@ struct MetadataTree::MetadataTreeImpl
                 }
 
                 node_blocks[0].chunk = chunk;
-                node_blocks[0].index = 11;
+                node_blocks[0].index = 12;
             }
 
         ~GlobalData() {
@@ -611,6 +583,11 @@ MetadataTree::~MetadataTree()
     mP.reset();
 }
 
+void MetadataTree::release()
+{
+    MetadataTreeImpl::GlobalData* g = MetadataTreeImpl::mG.exchange(nullptr);
+    delete g;
+}
 
 //
 // --- Modifying tree ops

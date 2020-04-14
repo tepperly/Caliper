@@ -13,11 +13,12 @@ else()
 endif()
 
 set(CALIPER_CXX_EXAMPLE_APPS
-  cali-basic-annotations
+  cxx-example
   cali-memtracking
   cali-memtracking-macros
   cali-perfproblem-branch-mispred
-  cali-functional)
+  cali-functional
+  cali-regionprofile)
 set(CALIPER_C_EXAMPLE_APPS
   cali-basic-annotations-c
   cali-print-snapshot)

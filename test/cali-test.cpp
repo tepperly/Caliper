@@ -1,36 +1,7 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
-// A basic Caliper instrumentation demo / test file
+// This file contains tests for some more esoteric Caliper quirks and features
 
 #include <caliper/cali.h>
 
@@ -59,34 +30,6 @@ void end_foo_op()
     cali::Annotation("foo").end();
 }
 
-void make_hierarchy_1()
-{
-    cali::Caliper   c;    
-    cali::Attribute attr = c.create_attribute("misc.hierarchy", CALI_TYPE_STRING);
-
-    cali::Variant   data[3] = {
-        { CALI_TYPE_STRING, "h1_l0", 5 },
-        { CALI_TYPE_STRING, "h1_l1", 5 },
-        { CALI_TYPE_STRING, "h1_l2", 5 }
-    };
-
-    c.set_path(attr, 3, data);
-}
-
-void make_hierarchy_2()
-{
-    cali::Caliper   c;
-    cali::Attribute attr = c.create_attribute("misc.hierarchy", CALI_TYPE_STRING);
-
-    cali::Variant   data[3] = {
-        { CALI_TYPE_STRING, "h2_l0", 5 },
-        { CALI_TYPE_STRING, "h2_l1", 5 },
-        { CALI_TYPE_STRING, "h2_l2", 5 }
-    };
-
-    c.set_path(attr, 3, data);
-}
-
 void test_blob()
 {
     // An annotation with a user-defined datatype
@@ -97,8 +40,8 @@ void test_blob()
         float    f = 42.42;
     } my_weird_elem;
 
-    cali::Annotation::Guard 
-        g_mydata( cali::Annotation("mydata").set(CALI_TYPE_USR, &my_weird_elem, sizeof(my_weird_elem)) );
+    cali::Annotation::Guard
+        g_mydata( cali::Annotation("mydata").begin(CALI_TYPE_USR, &my_weird_elem, sizeof(my_weird_elem)) );
 }
 
 void test_annotation_copy()
@@ -109,7 +52,7 @@ void test_annotation_copy()
 
     {
         std::vector<cali::Annotation> vec;
-        
+
         vec.push_back(ann);
         vec.push_back(cali::Annotation("copy_ann_2"));
 
@@ -118,8 +61,8 @@ void test_annotation_copy()
             a.end();
         }
     }
-    
-    ann.end();    
+
+    ann.end();
 }
 
 void test_attribute_metadata()
@@ -143,7 +86,7 @@ void test_attribute_metadata()
 
     if (attr.get(c.get_attribute("meta-int")).to_int() != 42)
         std::cout << "Attribute metadata mismatch";
-    
+
     c.end(attr);
 }
 
@@ -177,17 +120,6 @@ void test_escaping()
     w.end();
 }
 
-void test_hierarchy()
-{
-    cali::Annotation h("hierarchy");
-
-    h.set(1);
-    make_hierarchy_1();
-    h.set(2);
-    make_hierarchy_2();
-    h.end();
-}
-
 void test_cross_scope()
 {
     begin_foo_op();
@@ -215,23 +147,33 @@ void test_aggr_warnings()
 
     uint64_t largeval = 0xFFFFFFFFFFFFFFFF;
 
-    // make a snapshot with "-1, -2, -3" entries. this should cause the aggregation key 
+    //   make a snapshot with "-1, -2, -3" entries. this should cause the aggregation key
     // getting too long, as negative values aren't be compressed well currently
-    cali::Attribute attr[6] = { d, i1, i2, i3, i4, i5 };
-    cali::Variant   data[6] = { 
-        cali::Variant(1.0), 
-        cali::Variant(-1), 
-        cali::Variant(-2), 
-        cali::Variant(-3),
-        cali::Variant(CALI_TYPE_UINT, &largeval, sizeof(uint64_t)), 
-        cali::Variant(CALI_TYPE_UINT, &largeval, sizeof(uint64_t))
+
+    cali_id_t attr[6] = {
+        d.id(),  i1.id(),   i2.id(),
+        i3.id(), i4.id(),   i5.id()
+    };
+    cali_variant_t data[6] = {
+        cali_make_variant_from_double(1.0),
+        cali_make_variant_from_int(-1),
+        cali_make_variant_from_int(-2),
+        cali_make_variant_from_int(-3),
+        cali_make_variant_from_uint(largeval),
+        cali_make_variant_from_uint(largeval)
     };
 
-    cali::SnapshotRecord::FixedSnapshotRecord<16> info_data;
-    cali::SnapshotRecord info(info_data);
+    cali_id_t chn_id =
+        cali::create_channel("test_aggregate_warnings", 0, {
+                { "CALI_SERVICES_ENABLE",      "aggregate" },
+                { "CALI_AGGREGATE_KEY",        "function,aw.dbl,aw.int.1,aw.int.2,aw.int.3,aw.int.4,aw.int.5" },
+                { "CALI_CHANNEL_CONFIG_CHECK", "false"     }
+            });
 
-    c.make_entrylist(6, attr, data, info);
-    c.push_snapshot(CALI_SCOPE_THREAD | CALI_SCOPE_PROCESS, &info);
+    cali_channel_push_snapshot(chn_id, CALI_SCOPE_THREAD | CALI_SCOPE_PROCESS,
+                               6, attr, data);
+
+    cali_delete_channel(chn_id);
 }
 
 std::ostream& print_padded(std::ostream& os, const char* string, int fieldlen)
@@ -247,7 +189,7 @@ std::ostream& print_padded(std::ostream& os, const char* string, int fieldlen)
 
     if (slen < fieldlen)
         os << whitespace + (120 - std::min(120, fieldlen-slen));
-    
+
     return os;
 }
 
@@ -263,7 +205,7 @@ void test_instance()
                   << std::endl;
         return;
     }
-    
+
     cali_init();
 
     if (cali::Caliper::is_initialized() == false) {
@@ -285,16 +227,36 @@ void test_config_after_init()
     cali_config_set("CALI_SERVICES_ENABLE", "debug");
 }
 
+void test_nesting_error()
+{
+    cali::Annotation a("test.nesting-error.a", CALI_ATTR_NESTED);
+    cali::Annotation b("test.nesting-error.b", CALI_ATTR_NESTED);
+
+    a.begin(11);
+    b.begin(22);
+    a.end();
+    b.end();
+}
+
+void test_unclosed_region()
+{
+    cali::Annotation a("test.unclosed_region", CALI_ATTR_DEFAULT);
+
+    a.begin(101);
+    a.begin(202);
+    a.end();
+}
+
 int main(int argc, char* argv[])
 {
+    cali_config_preset("CALI_CALIPER_ATTRIBUTE_PROPERTIES", "test-prop-preset=asvalue:process_scope");
+
     // instance test has to run before Caliper initialization
 
     test_instance();
-    
-    cali_config_preset("CALI_CALIPER_ATTRIBUTE_PROPERTIES", "test-prop-preset=asvalue:process_scope");
 
     CALI_CXX_MARK_FUNCTION;
-        
+
     const struct testcase_info_t {
         const char*  name;
         void        (*fn)();
@@ -309,9 +271,11 @@ int main(int argc, char* argv[])
         { "cross-scope",              test_cross_scope        },
         { "attribute-prop-preset",    test_attr_prop_preset   },
         { "config-after-init",        test_config_after_init  },
+        { "nesting-error",            test_nesting_error      },
+        { "unclosed-region",          test_unclosed_region    },
         { 0, 0 }
     };
-    
+
     {
         cali::Annotation::Guard
             g( cali::Annotation("cali-test").begin("checking") );
@@ -319,7 +283,7 @@ int main(int argc, char* argv[])
         // check for missing/misspelled command line test cases
         for (int a = 1; a < argc; ++a) {
             const testcase_info_t* t = testcases;
-        
+
             for ( ; t->name && 0 != strcmp(t->name, argv[a]); ++t)
                 ;
 
@@ -327,17 +291,17 @@ int main(int argc, char* argv[])
                 std::cerr << "test \"" << argv[a] << "\" not found" << std::endl;
         }
     }
-    
+
     cali::Annotation::Guard
         g( cali::Annotation("cali-test").begin("testing") );
-    
+
     for (const testcase_info_t* t = testcases; t->fn; ++t) {
         if (argc > 1) {
             int a = 1;
-            
+
             for ( ; a < argc && 0 != strcmp(t->name, argv[a]); ++a)
                 ;
-            
+
             if (a == argc)
                 continue;
         }

@@ -1,34 +1,5 @@
-// Copyright (c) 2016, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // SnapshotRecord class definition
 
@@ -56,15 +27,6 @@ SnapshotRecord::append(const SnapshotRecord& list)
 
     m_sizes.n_nodes     += max_nodes;
     m_sizes.n_immediate += max_immediate;
-}
-
-void
-SnapshotRecord::append(Node* node)
-{
-    if (m_sizes.n_nodes >= m_capacity.n_nodes)
-        return;
-
-    m_node_array[m_sizes.n_nodes++] = node;
 }
 
 void
@@ -99,11 +61,11 @@ SnapshotRecord::get(const Attribute& attr) const
         return Entry::empty;
 
     if (attr.store_as_value()) {
-        for (int i = 0; i < m_sizes.n_immediate; ++i)
+        for (size_t i = 0; i < m_sizes.n_immediate; ++i)
             if (m_attr_array[i] == attr.id())
                 return Entry(attr, m_data_array[i]);
     } else {
-        for (int i = 0; i < m_sizes.n_nodes; ++i)
+        for (size_t i = 0; i < m_sizes.n_nodes; ++i)
             for (cali::Node* node = m_node_array[i]; node; node = node->parent())
                 if (node->attribute() == attr.id())
                     return Entry(node);
@@ -123,22 +85,4 @@ SnapshotRecord::to_entrylist() const
         vec.push_back(Entry(m_attr_array[i], m_data_array[i]));
 
     return vec;
-}
-
-std::map< Attribute, std::vector<Variant> >
-SnapshotRecord::unpack(CaliperMetadataAccessInterface& db) const
-{
-    std::map< Attribute, std::vector<Variant> > rec;
-
-    // unpack node entries 
-    for (int i = 0; i < m_sizes.n_nodes; ++i)
-        for (const cali::Node* node = m_node_array[i]; node; node = node->parent())
-            if (node->attribute() != CALI_INV_ID)
-                rec[db.get_attribute(node->attribute())].push_back(node->data());
-
-    // unpack immediate entries
-    for (int i = 0; i < m_sizes.n_immediate; ++i)
-        rec[db.get_attribute(m_attr_array[i])].push_back(m_data_array[i]);
-
-    return rec;
 }

@@ -1,40 +1,12 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
-// Produced at the Lawrence Livermore National Laboratory.
-//
-// This file is part of Caliper.
-// Written by David Boehme, boehme3@llnl.gov.
-// LLNL-CODE-678900
-// All rights reserved.
-//
-// For details, see https://github.com/scalability-llnl/Caliper.
-// Please also see the LICENSE file for our additional BSD notice.
-//
-// Redistribution and use in source and binary forms, with or without modification, are
-// permitted provided that the following conditions are met:
-//
-//  * Redistributions of source code must retain the above copyright notice, this list of
-//    conditions and the disclaimer below.
-//  * Redistributions in binary form must reproduce the above copyright notice, this list of
-//    conditions and the disclaimer (as noted below) in the documentation and/or other materials
-//    provided with the distribution.
-//  * Neither the name of the LLNS/LLNL nor the names of its contributors may be used to endorse
-//    or promote products derived from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
-// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
-// LAWRENCE LIVERMORE NATIONAL SECURITY, LLC, THE U.S. DEPARTMENT OF ENERGY OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright (c) 2019, Lawrence Livermore National Security, LLC.
+// See top-level LICENSE file for details.
 
 // Annotation interface
 
 #include "caliper/Annotation.h"
 
 #include "caliper/Caliper.h"
+#include "caliper/cali.h"
 
 #include "caliper/common/Log.h"
 #include "caliper/common/Variant.h"
@@ -48,32 +20,54 @@ using namespace cali;
 
 namespace cali
 {
-    extern Attribute function_attr;
-    extern Attribute loop_attr;
+
+extern Attribute class_iteration_attr;
+extern Attribute function_attr;
+extern Attribute loop_attr;
+extern Attribute annotation_attr;
+
 }
 
 // --- Pre-defined Function annotation class
 
 Function::Function(const char* name)
 {
-    Caliper().begin(function_attr, Variant(CALI_TYPE_STRING, name, strlen(name)));
+    Caliper().begin(function_attr, Variant(name));
 }
 
 Function::~Function()
 {
     Caliper().end(function_attr);
 }
-        
+
+// --- Pre-defined scope annotation class
+
+ScopeAnnotation::ScopeAnnotation(const char* name)
+{
+    Caliper().begin(annotation_attr, Variant(name));
+}
+
+ScopeAnnotation::~ScopeAnnotation()
+{
+    Caliper().end(annotation_attr);
+}
+
 // --- Pre-defined loop annotation class
 
 struct Loop::Impl {
-    Attribute iter_attr;
-    int       level;
-    
+    Attribute        iter_attr;
+    std::atomic<int> level;
+    std::atomic<int> refcount;
+
     Impl(const char* name)
-        : level(0) {
+        : level(0), refcount(1) {
+        Variant v_true(true);
+
         iter_attr =
-            Caliper().create_attribute(std::string("iteration#") + name, CALI_TYPE_INT, CALI_ATTR_ASVALUE);
+            Caliper().create_attribute(std::string("iteration#") + name,
+                                       CALI_TYPE_INT,
+                                       CALI_ATTR_ASVALUE,
+                                       1, &class_iteration_attr, &v_true);
     }
 };
 
@@ -91,18 +85,26 @@ Loop::Iteration::~Iteration()
 Loop::Loop(const char* name)
     : pI(new Impl(name))
 {
-    if (Caliper().begin(loop_attr, Variant(CALI_TYPE_STRING, name, strlen(name))) == CALI_SUCCESS)
-        ++pI->level;
+    Caliper().begin(loop_attr, Variant(CALI_TYPE_STRING, name, strlen(name)));
+    ++pI->level;
+}
+
+Loop::Loop(const Loop& loop)
+    : pI(loop.pI)
+{
+    ++pI->refcount;
 }
 
 Loop::~Loop()
 {
-    end();
-    delete pI;
+    if (--pI->refcount == 0) {
+        end();
+        delete pI;
+    }
 }
 
 Loop::Iteration
-Loop::iteration(int i)
+Loop::iteration(int i) const
 {
     return Iteration(pI, i);
 }
@@ -119,25 +121,40 @@ Loop::end()
 // --- Annotation implementation object
 
 struct Annotation::Impl {
-    std::atomic<Attribute*> m_attr;
-    std::string             m_name;
-    int                     m_opt;
-    std::atomic<int>        m_refcount;
-
-    Impl(const std::string& name, int opt)
-        : m_attr(nullptr), 
-          m_name(name), 
+    std::atomic<Attribute*>  m_attr;
+    std::string              m_name;
+    std::vector<Attribute>   m_metadata_keys;
+    std::vector<Variant>     m_metadata_values;
+    int                      m_opt;
+    std::atomic<int>         m_refcount;
+    Impl(const std::string& name, MetadataListType metadata, int opt)
+        : m_attr(nullptr),
+          m_name(name),
           m_opt(opt),
           m_refcount(1)
-        { }
+        {
+            Caliper c;
+            if(!c.attribute_exists(m_name)){
+                for(auto kv : metadata){
+                    m_metadata_keys.push_back(c.create_attribute(kv.first,kv.second.type(),0));
+                    m_metadata_values.push_back(kv.second);
+                }
+            }
+        }
+
+    Impl(const std::string& name, int opt)
+        : m_attr(nullptr),
+          m_name(name),
+          m_opt(opt),
+          m_refcount(1)
+        {}
 
     ~Impl() {
         delete m_attr.load();
     }
-    
     void begin(const Variant& data) {
         Caliper   c;
-        Attribute attr = get_attribute(c, data.type());
+        Attribute attr = get_attribute(c, data.type(), m_metadata_keys, m_metadata_values);
 
         if ((attr.type() == data.type()) && attr.type() != CALI_TYPE_INV)
             c.begin(attr, data);
@@ -145,7 +162,7 @@ struct Annotation::Impl {
 
     void set(const Variant& data) {
         Caliper   c;
-        Attribute attr = get_attribute(c, data.type());
+        Attribute attr = get_attribute(c, data.type(), m_metadata_keys, m_metadata_values);
 
         if ((attr.type() == data.type()) && attr.type() != CALI_TYPE_INV)
             c.set(attr, data);
@@ -153,22 +170,22 @@ struct Annotation::Impl {
 
     void end() {
         Caliper c;
-        
+
         c.end(get_attribute(c));
     }
 
-    Attribute get_attribute(Caliper& c, cali_attr_type type = CALI_TYPE_INV) {
+    Attribute get_attribute(Caliper& c, cali_attr_type type = CALI_TYPE_INV, const std::vector<cali::Attribute>& attrs = {}, const std::vector<cali::Variant>& values = {}) {
         Attribute* attr_p = m_attr.load();
 
         if (!attr_p) {
             Attribute* new_attr = type == CALI_TYPE_INV ?
                 new Attribute(c.get_attribute(m_name)) :
-                new Attribute(c.create_attribute(m_name, type, m_opt));
+                new Attribute(c.create_attribute(m_name, type, m_opt,attrs.size(),attrs.data(),values.data()));
 
             // Don't store invalid attribute in shared pointer
             if (*new_attr == Attribute::invalid)
                 return Attribute::invalid;
-            
+
             // Save new_attr iff m_attr == attr_p. If that is no longer the case,
             // some other thread has a set m_attr in the meantime, so just
             // delete our new object.
@@ -179,7 +196,7 @@ struct Annotation::Impl {
 
             if (!attr_p || *attr_p == Attribute::invalid)
                 Log(0).stream() << "Could not create attribute " << m_name << endl;
-        }        
+        }
 
         return (attr_p ? *attr_p : Attribute::invalid);
     }
@@ -211,6 +228,9 @@ Annotation::Guard::~Guard()
 }
 
 // --- Constructors / destructor
+Annotation::Annotation(const char* name, const MetadataListType& metadata, int opt)
+    : pI(new Impl(name, metadata, opt))
+{ }
 
 Annotation::Annotation(const char* name, int opt)
     : pI(new Impl(name, opt))
@@ -247,7 +267,7 @@ Annotation& Annotation::begin()
 Annotation& Annotation::begin(int data)
 {
     Attribute* attr = pI->m_attr.load();
-    
+
     // special case: allow assignment of int values to 'double' or 'uint' attributes
     if (attr && attr->type() == CALI_TYPE_DOUBLE)
         return begin(Variant(static_cast<double>(data)));
